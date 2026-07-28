@@ -98,18 +98,20 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 	contextBlock := fmt.Sprintf("You are analyzing a code repository. Use the following code snippets to answer the question.\n\nCODE:\n%s\n\n---\n", join(contextParts, "\n\n"))
 
 	// Step 7: Build messages for LLM
-	messages := []ChatMessage{
-		{Role: "system", Content: "You are an expert code analyst. Answer questions based on the provided code snippets. Be specific, reference file paths and line numbers when citing code. If the provided context isn't sufficient, say so."},
-		{Role: "user", Content: contextBlock + "\n\nQuestion: " + question},
-	}
-	// Prepend conversation history (simplified: last 6 messages)
+	systemMsg := ChatMessage{Role: "system", Content: "You are an expert code analyst. Answer questions based on the provided code snippets. Be specific, reference file paths and line numbers when citing code. If the provided context isn't sufficient, say so."}
+	userMsg := ChatMessage{Role: "user", Content: contextBlock + "\n\nQuestion: " + question}
+
+	// Insert conversation history in chronological order (simplified: last 6 messages)
+	var historyMsgs []ChatMessage
 	start := len(history) - 6
 	if start < 0 {
 		start = 0
 	}
 	for i := start; i < len(history); i++ {
-		messages = append([]ChatMessage{{Role: history[i].Role, Content: history[i].Content}}, messages...)
+		historyMsgs = append(historyMsgs, ChatMessage{Role: history[i].Role, Content: history[i].Content})
 	}
+	// Insert history after system message, before user context
+	messages := append([]ChatMessage{systemMsg}, append(historyMsgs, userMsg)...)
 
 	// Step 8: Setup SSE writer
 	flusher, ok := w.(http.Flusher)
