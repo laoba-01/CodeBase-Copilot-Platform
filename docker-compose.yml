@@ -34,7 +34,9 @@ services:
       - "6379:6379"
 
   embedding:
-    build: ./python-embedding
+    build:
+      context: .
+      dockerfile: python-embedding/Dockerfile
     ports:
       - "50051:50051"
 

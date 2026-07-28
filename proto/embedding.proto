@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package embedding;
+
+option go_package = "github.com/codebase-copilot/core/proto/embedding";
+
+service EmbeddingService {
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+  rpc Rerank(RerankRequest) returns (RerankResponse);
+}
+
+message EmbedRequest {
+  repeated string texts = 1;
+}
+
+message EmbedResponse {
+  repeated Embedding vectors = 1;
+}
+
+message Embedding {
+  repeated float values = 1;
+}
+
+message RerankRequest {
+  string query = 1;
+  repeated string documents = 2;
+  int32 top_k = 3;
+}
+
+message RerankResponse {
+  repeated RerankResult results = 1;
+}
+
+message RerankResult {
+  int32 index = 1;
+  float score = 2;
+}
