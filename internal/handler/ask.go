@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +32,19 @@ func (h *AskHandler) Ask(c *gin.Context) {
 	}
 	userID := auth.GetUserID(c)
 
+	// C3: Verify repo ownership before running RAG
+	var repoOwnerID string
+	err := h.db.QueryRow(c.Request.Context(),
+		`SELECT user_id FROM repos WHERE id = $1`, req.RepoID).Scan(&repoOwnerID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		return
+	}
+	if repoOwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+		return
+	}
+
 	// Create or get conversation
 	convID := req.ConversationID
 	if convID == "" {
@@ -38,23 +53,43 @@ func (h *AskHandler) Ask(c *gin.Context) {
 		if len(title) > 100 {
 			title = title[:100]
 		}
-		h.db.Exec(c.Request.Context(),
+		// I1: Check Exec errors
+		if _, err := h.db.Exec(c.Request.Context(),
 			`INSERT INTO conversations (id, user_id, repo_id, title) VALUES ($1,$2,$3,$4)`,
-			convID, userID, req.RepoID, title)
+			convID, userID, req.RepoID, title); err != nil {
+			log.Printf("ERROR: failed to create conversation: %v", err)
+		}
 	}
 
 	// Save user message
-	h.db.Exec(c.Request.Context(),
+	// I1: Check Exec errors
+	userMsgID := uuid.New().String()
+	if _, err := h.db.Exec(c.Request.Context(),
 		`INSERT INTO messages (id, conv_id, role, content) VALUES ($1,$2,'user',$3)`,
-		uuid.New().String(), convID, req.Question)
+		userMsgID, convID, req.Question); err != nil {
+		log.Printf("ERROR: failed to save user message: %v", err)
+	}
 
 	// Load history
 	history := h.loadHistory(c.Request.Context(), convID)
 
 	// Run RAG pipeline (streams directly to ResponseWriter)
-	if err := h.rag.Ask(c.Request.Context(), req.RepoID, req.Question, history, c.Writer); err != nil {
-		// Error is already written to SSE stream, but log it
-		_ = err
+	result, err := h.rag.Ask(c.Request.Context(), req.RepoID, req.Question, history, c.Writer)
+	if err != nil {
+		log.Printf("ERROR: RAG pipeline failed: %v", err)
+		return
+	}
+
+	// I2: Persist assistant message with full content, citations, confidence, and tokens
+	if result != nil && result.FullText != "" {
+		citationsJSON, _ := json.Marshal(result.Citations)
+		if _, err := h.db.Exec(c.Request.Context(),
+			`INSERT INTO messages (id, conv_id, role, content, citations, confidence, tokens)
+			 VALUES ($1,$2,'assistant',$3,$4,$5,$6)`,
+			uuid.New().String(), convID, result.FullText, citationsJSON,
+			result.Confidence, result.Tokens); err != nil {
+			log.Printf("ERROR: failed to save assistant message: %v", err)
+		}
 	}
 }
 

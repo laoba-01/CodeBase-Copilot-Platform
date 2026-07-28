@@ -53,7 +53,8 @@ func (h *RepoHandler) List(c *gin.Context) {
 }
 
 func (h *RepoHandler) Get(c *gin.Context) {
-	r, err := h.svc.Get(c.Request.Context(), c.Param("id"))
+	userID := auth.GetUserID(c)
+	r, err := h.svc.Get(c.Request.Context(), c.Param("id"), userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
@@ -66,11 +67,59 @@ func (h *RepoHandler) Get(c *gin.Context) {
 }
 
 func (h *RepoHandler) Delete(c *gin.Context) {
-	if err := h.svc.Delete(c.Request.Context(), c.Param("id")); err != nil {
+	userID := auth.GetUserID(c)
+	if err := h.svc.Delete(c.Request.Context(), c.Param("id"), userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+func (h *RepoHandler) Files(c *gin.Context) {
+	repoID := c.Param("id")
+	userID := auth.GetUserID(c)
+
+	// Verify repo ownership
+	if _, err := h.svc.Get(c.Request.Context(), repoID, userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	files, err := h.svc.GetFiles(c.Request.Context(), repoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if files == nil {
+		files = []repo.FileNode{}
+	}
+	c.JSON(http.StatusOK, files)
+}
+
+func (h *RepoHandler) Graph(c *gin.Context) {
+	repoID := c.Param("id")
+	userID := auth.GetUserID(c)
+
+	// Verify repo ownership
+	if _, err := h.svc.Get(c.Request.Context(), repoID, userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	graph, err := h.svc.GetGraph(c.Request.Context(), repoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, graph)
 }
 
 func (h *RepoHandler) RegisterRoutes(r *gin.RouterGroup) {
@@ -78,4 +127,6 @@ func (h *RepoHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/repos", h.List)
 	r.GET("/repos/:id", h.Get)
 	r.DELETE("/repos/:id", h.Delete)
+	r.GET("/repos/:id/files", h.Files)
+	r.GET("/repos/:id/graph", h.Graph)
 }

@@ -61,8 +61,8 @@ func main() {
 	var indexSvc *indexer.Service
 	if embClient != nil {
 		indexSvc = indexer.NewService(pool, embClient, vstore, "/data/repos")
+		repoSvc.Indexer = indexSvc.IndexRepo
 	}
-	_ = indexSvc // referenced for future background task workers
 
 	// QA: RAG service
 	var askHandler *handler.AskHandler

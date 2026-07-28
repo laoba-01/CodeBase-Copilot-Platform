@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/codebase-copilot/core/internal/domain"
 	"github.com/codebase-copilot/core/internal/embedding"
@@ -13,7 +14,15 @@ import (
 
 // Service defines the QA interface consumed by HTTP handlers.
 type Service interface {
-	Ask(ctx context.Context, repoID, question string, history []domain.Message, w http.ResponseWriter) error
+	Ask(ctx context.Context, repoID, question string, history []domain.Message, w http.ResponseWriter) (*AskResult, error)
+}
+
+// AskResult holds the accumulated result of a RAG query for persistence.
+type AskResult struct {
+	FullText   string
+	Citations  []domain.Citation
+	Confidence float64
+	Tokens     int
 }
 
 // RAGService orchestrates the full RAG pipeline: embed, search, expand, rerank, assemble, and stream.
@@ -29,17 +38,18 @@ func NewRAGService(emb *embedding.Client, searcher *vectorstore.Searcher, llm *L
 }
 
 // Ask runs the full RAG pipeline and streams the answer via SSE to the writer.
-func (s *RAGService) Ask(ctx context.Context, repoID, question string, history []domain.Message, w http.ResponseWriter) error {
+// Returns an AskResult with the accumulated response for persistence.
+func (s *RAGService) Ask(ctx context.Context, repoID, question string, history []domain.Message, w http.ResponseWriter) (*AskResult, error) {
 	// Step 1: Embed the question
 	vecs, err := s.emb.Embed(ctx, []string{question})
 	if err != nil {
-		return fmt.Errorf("embed question: %w", err)
+		return nil, fmt.Errorf("embed question: %w", err)
 	}
 
 	// Step 2: Semantic search → top 50
 	results, err := s.searcher.SemanticSearch(ctx, repoID, vecs[0], 50)
 	if err != nil {
-		return fmt.Errorf("semantic search: %w", err)
+		return nil, fmt.Errorf("semantic search: %w", err)
 	}
 
 	// Step 3: Graph expand → ±1 hop call edges
@@ -116,15 +126,17 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 	// Step 8: Setup SSE writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		return fmt.Errorf("streaming not supported")
+		return nil, fmt.Errorf("streaming not supported")
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// Step 9: Stream LLM response → SSE chunks
+	// Step 9: Stream LLM response → SSE chunks, accumulating full text
+	var fullText strings.Builder
 	totalTokens := 0
 	err = s.llm.StreamChat(ctx, messages, func(text string) {
+		fullText.WriteString(text)
 		chunk := domain.SSEChunk{
 			Text:      text,
 			Citations: citations, // Send citations with first chunk
@@ -137,7 +149,7 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
 		flusher.Flush()
-		return err
+		return nil, err
 	}
 
 	// Step 10: Send done event
@@ -149,7 +161,13 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
 	flusher.Flush()
 
-	return nil
+	result := &AskResult{
+		FullText:   fullText.String(),
+		Citations:  citations,
+		Confidence: 0.85,
+		Tokens:     totalTokens,
+	}
+	return result, nil
 }
 
 func join(parts []string, sep string) string {

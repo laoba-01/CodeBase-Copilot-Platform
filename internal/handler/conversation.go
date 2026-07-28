@@ -45,9 +45,25 @@ func (h *ConversationHandler) List(c *gin.Context) {
 }
 
 func (h *ConversationHandler) Get(c *gin.Context) {
+	convID := c.Param("id")
+	userID := auth.GetUserID(c)
+
+	// Verify conversation ownership
+	var ownerID string
+	err := h.db.QueryRow(c.Request.Context(),
+		`SELECT user_id FROM conversations WHERE id = $1`, convID).Scan(&ownerID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+		return
+	}
+	if ownerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+		return
+	}
+
 	rows, err := h.db.Query(c.Request.Context(),
 		`SELECT id, conv_id, role, content, citations, tokens, created_at FROM messages WHERE conv_id = $1 ORDER BY created_at ASC`,
-		c.Param("id"))
+		convID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
