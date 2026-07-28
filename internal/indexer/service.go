@@ -75,7 +75,11 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 		}
 	}
 
-	// Step 4: Clear existing index and insert new
+	// Step 4: Clear existing index and edges, then insert new
+	// Delete edges first (FK to index_nodes means edges must go before nodes)
+	if err := deleteEdgesByRepo(ctx, s.db, repo.ID); err != nil {
+		return fmt.Errorf("clear old edges: %w", err)
+	}
 	if err := s.store.DeleteByRepo(ctx, repo.ID); err != nil {
 		return fmt.Errorf("clear old index: %w", err)
 	}
@@ -85,18 +89,9 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 		}
 	}
 
-	// Step 5: Insert call edges
-	for _, e := range calls {
-		s.db.Exec(ctx,
-			`INSERT INTO call_edges (id, repo_id, caller_id, callee_id, file_path, line) VALUES ($1,$2,$3,$4,$5,$6)`,
-			e.ID, e.RepoID, e.CallerID, e.CalleeID, e.FilePath, e.Line)
-	}
-
-	// Step 6: Insert dep edges
-	for _, e := range deps {
-		s.db.Exec(ctx,
-			`INSERT INTO dep_edges (id, repo_id, source_id, target_id, dep_type) VALUES ($1,$2,$3,$4,$5)`,
-			e.ID, e.RepoID, e.SourceID, e.TargetID, e.DepType)
+	// Step 5: Insert call edges and dep edges in a transaction
+	if err := insertEdges(ctx, s.db, repo.ID, calls, deps); err != nil {
+		return fmt.Errorf("insert edges: %w", err)
 	}
 
 	// Step 7: Mark ready
@@ -119,4 +114,53 @@ func (s *Service) ensureCloned(ctx context.Context, repo *domain.Repository, pat
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1",
 		"--branch", repo.DefaultBranch, repo.CloneURL, path)
 	return cmd.Run()
+}
+
+// deleteEdgesByRepo removes all call and dep edges for a repo (run before
+// deleting index_nodes, since edges FK-reference nodes).
+func deleteEdgesByRepo(ctx context.Context, db *pgxpool.Pool, repoID string) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM call_edges WHERE repo_id = $1`, repoID); err != nil {
+		return fmt.Errorf("delete call_edges: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM dep_edges WHERE repo_id = $1`, repoID); err != nil {
+		return fmt.Errorf("delete dep_edges: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// insertEdges inserts call edges and dep edges within a single transaction,
+// returning the first error encountered.
+func insertEdges(ctx context.Context, db *pgxpool.Pool, repoID string, calls []*domain.CallEdge, deps []*domain.DepEdge) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, e := range calls {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO call_edges (id, repo_id, caller_id, callee_id, file_path, line) VALUES ($1,$2,$3,$4,$5,$6)`,
+			e.ID, e.RepoID, e.CallerID, e.CalleeID, e.FilePath, e.Line)
+		if err != nil {
+			return fmt.Errorf("insert call edge %s: %w", e.ID, err)
+		}
+	}
+
+	for _, e := range deps {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO dep_edges (id, repo_id, source_id, target_id, dep_type) VALUES ($1,$2,$3,$4,$5)`,
+			e.ID, e.RepoID, e.SourceID, e.TargetID, e.DepType)
+		if err != nil {
+			return fmt.Errorf("insert dep edge %s: %w", e.ID, err)
+		}
+	}
+
+	return tx.Commit(ctx)
 }
