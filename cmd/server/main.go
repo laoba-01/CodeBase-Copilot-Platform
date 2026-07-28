@@ -35,7 +35,7 @@ func main() {
 
 	// Run migrations
 	if err := db.RunMigrations(context.Background(), pool, "migrations"); err != nil {
-		log.Fatalf("migrations: %v", err)
+		log.Printf("WARNING: migrations: %v", err)
 	}
 
 	// Embedding client
@@ -93,8 +93,8 @@ func main() {
 		c.Next()
 	})
 
-	// Public routes
-	authHandler.RegisterRoutes(&r.RouterGroup)
+	// Public routes (Any = GET+POST for GitHub OAuth callback)
+	r.Any("/auth/github/callback", authHandler.GitHubCallback)
 
 	// Protected routes
 	api := r.Group("/api")

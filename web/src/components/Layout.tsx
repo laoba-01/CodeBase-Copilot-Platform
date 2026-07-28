@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout as AntLayout, Menu, Typography, Button, Space } from 'antd';
 import {
@@ -20,6 +20,18 @@ export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const token = localStorage.getItem('token');
+
+  // Capture token from GitHub OAuth redirect (?token=...&username=...)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const urlToken = params.get('token');
+    if (urlToken) {
+      localStorage.setItem('token', urlToken);
+      // Clean URL without reloading
+      window.history.replaceState({}, '', '/');
+      window.location.reload();
+    }
+  }, [location.search]);
 
   // Determine selected key from current path
   const pathParts = location.pathname.split('/').filter(Boolean);

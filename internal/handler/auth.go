@@ -28,14 +28,19 @@ type githubCallbackReq struct {
 }
 
 func (h *AuthHandler) GitHubCallback(c *gin.Context) {
-	var req githubCallbackReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
-		return
+	// Support both GET (GitHub redirect with ?code=) and POST (frontend fetch)
+	code := c.Query("code")
+	if code == "" {
+		var req githubCallbackReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+			return
+		}
+		code = req.Code
 	}
 
 	// 1. Exchange code for access token
-	accessToken, err := exchangeGitHubToken(h.cfg.GitHubClientID, h.cfg.GitHubClientSecret, req.Code)
+	accessToken, err := exchangeGitHubToken(h.cfg.GitHubClientID, h.cfg.GitHubClientSecret, code)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("github token exchange: %v", err)})
 		return
@@ -59,6 +64,13 @@ func (h *AuthHandler) GitHubCallback(c *gin.Context) {
 	token, err := auth.GenerateToken(userID, h.cfg.JWTSecret)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("generate token: %v", err)})
+		return
+	}
+
+	// If GET (GitHub redirect), redirect to frontend with token
+	if c.Request.Method == "GET" {
+		c.Redirect(http.StatusFound,
+			fmt.Sprintf("/?token=%s&username=%s&avatar=%s", token, ghUser.Login, ghUser.AvatarURL))
 		return
 	}
 
@@ -133,5 +145,6 @@ func (h *AuthHandler) upsertUser(ctx context.Context, u *githubUser) (string, er
 }
 
 func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
+	r.GET("/auth/github/callback", h.GitHubCallback)
 	r.POST("/auth/github/callback", h.GitHubCallback)
 }
