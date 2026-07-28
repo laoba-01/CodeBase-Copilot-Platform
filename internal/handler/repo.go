@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/codebase-copilot/core/internal/auth"
 	"github.com/codebase-copilot/core/internal/domain"
@@ -53,7 +55,11 @@ func (h *RepoHandler) List(c *gin.Context) {
 func (h *RepoHandler) Get(c *gin.Context) {
 	r, err := h.svc.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, r)

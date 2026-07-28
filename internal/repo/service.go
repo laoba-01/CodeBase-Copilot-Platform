@@ -73,6 +73,9 @@ func (s *Service) List(ctx context.Context, userID string) ([]domain.Repository,
 		}
 		repos = append(repos, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate repos: %w", err)
+	}
 	return repos, nil
 }
 
@@ -91,5 +94,8 @@ func (s *Service) Get(ctx context.Context, id string) (*domain.Repository, error
 
 func (s *Service) Delete(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM repos WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("delete repo: %w", err)
+	}
+	return nil
 }
