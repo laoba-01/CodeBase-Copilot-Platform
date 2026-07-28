@@ -1,3 +1,3 @@
 module github.com/codebase-copilot/core
 
-go 1.25.6
+go 1.22
