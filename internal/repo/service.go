@@ -1,9 +1,10 @@
-
 package repo
 
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,10 +24,11 @@ func NewService(db *pgxpool.Pool) *Service {
 
 func (s *Service) Create(ctx context.Context, userID, fullName string) (*domain.Repository, error) {
 	// Parse owner/repo
-	var owner, name string
-	if _, err := fmt.Sscanf(fullName, "%s/%s", &owner, &name); err != nil {
+	parts := strings.SplitN(fullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("invalid repo name: %s (expected owner/repo)", fullName)
 	}
+	owner, name := parts[0], parts[1]
 
 	// Fetch repo info from GitHub
 	ghRepo, err := FetchGitHubRepo("", owner, name) // access_token from user's OAuth
@@ -57,6 +59,7 @@ func (s *Service) Create(ctx context.Context, userID, fullName string) (*domain.
 	if s.Indexer != nil {
 		go func() {
 			if err := s.Indexer(context.Background(), repo); err != nil {
+				log.Printf("indexer error for repo %s: %v", repo.ID, err)
 				// Update repo status to error on failure
 				s.db.Exec(context.Background(),
 					`UPDATE repos SET status = 'error' WHERE id = $1`, repo.ID)

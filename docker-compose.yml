@@ -4,6 +4,16 @@ services:
     ports:
       - "8080:8080"
     env_file: .env
+    environment:
+      DATABASE_URL: postgres://copilot:copilot@db:5432/copilot?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      EMBEDDING_ADDR: embedding:50051
+      HTTP_PROXY: http://host.docker.internal:7897
+      HTTPS_PROXY: http://host.docker.internal:7897
+      http_proxy: http://host.docker.internal:7897
+      https_proxy: http://host.docker.internal:7897
+      NO_PROXY: localhost,127.0.0.1,db,redis,embedding,.local
+      no_proxy: localhost,127.0.0.1,db,redis,embedding,.local
     depends_on:
       db:
         condition: service_healthy
@@ -37,9 +47,14 @@ services:
   embedding:
     build:
       context: .
-      dockerfile: python-embedding/Dockerfile
+      dockerfile: python-embedding/Dockerfile.cpu
     ports:
       - "50051:50051"
+    environment:
+      MODELSCOPE_CACHE: /modelscope-cache
+    volumes:
+      - modelscope_data:/modelscope-cache
 
 volumes:
   pgdata:
+  modelscope_data:

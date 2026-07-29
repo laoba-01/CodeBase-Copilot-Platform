@@ -18,15 +18,19 @@ func NewStore(db *pgxpool.Pool) *Store {
 }
 
 func (s *Store) Insert(ctx context.Context, node *domain.IndexNode) error {
-	// pgvector uses string representation for vectors
-	vecStr := vectorToString(node.Embedding)
+	var vecArg any
+	if len(node.Embedding) == 0 {
+		vecArg = nil
+	} else {
+		vecArg = vectorToString(node.Embedding)
+	}
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO index_nodes (id, repo_id, type, name, signature, code, file_path,
 			start_line, end_line, summary, embedding, language, package, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13, '{}')
 	`, node.ID, node.RepoID, node.Type, node.Name, node.Signature, node.Code,
 		node.FilePath, node.StartLine, node.EndLine, node.Summary,
-		vecStr, node.Language, node.Package)
+		vecArg, node.Language, node.Package)
 	return err
 }
 
@@ -38,14 +42,19 @@ func (s *Store) BatchInsert(ctx context.Context, nodes []*domain.IndexNode) erro
 	defer tx.Rollback(ctx)
 
 	for _, node := range nodes {
-		vecStr := vectorToString(node.Embedding)
+		var vecArg any
+		if len(node.Embedding) == 0 {
+			vecArg = nil
+		} else {
+			vecArg = vectorToString(node.Embedding)
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO index_nodes (id, repo_id, type, name, signature, code, file_path,
 				start_line, end_line, summary, embedding, language, package)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13)
 		`, node.ID, node.RepoID, node.Type, node.Name, node.Signature, node.Code,
 			node.FilePath, node.StartLine, node.EndLine, node.Summary,
-			vecStr, node.Language, node.Package)
+			vecArg, node.Language, node.Package)
 		if err != nil {
 			return fmt.Errorf("insert node %s: %w", node.ID, err)
 		}

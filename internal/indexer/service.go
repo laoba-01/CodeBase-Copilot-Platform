@@ -32,7 +32,8 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 	repoPath := fmt.Sprintf("%s/%s", s.dataDir, repo.ID)
 
 	// Step 1: Clone repo if not already cloned
-	if err := s.ensureCloned(ctx, repo, repoPath); err != nil {
+	var err error
+	if err = s.ensureCloned(ctx, repo, repoPath); err != nil {
 		return fmt.Errorf("clone: %w", err)
 	}
 
@@ -40,9 +41,17 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 	s.db.Exec(ctx, `UPDATE repos SET status = 'indexing' WHERE id = $1`, repo.ID)
 
 	// Step 2: Parse code → extract nodes, call edges, dep edges
-	nodes, calls, deps, err := ParseGoRepo(repoPath, repo.ID)
+	lang := detectLanguage(repoPath)
+	var nodes []*domain.IndexNode
+	var calls []*domain.CallEdge
+	var deps []*domain.DepEdge
+	if lang == "go" {
+		nodes, calls, deps, err = ParseGoRepo(repoPath, repo.ID)
+	} else {
+		nodes, calls, deps, err = ParseUniversal(repoPath, repo.ID)
+	}
 	if err != nil {
-		return fmt.Errorf("parse repo: %w", err)
+		return fmt.Errorf("parse repo (%s): %w", lang, err)
 	}
 
 	// Step 3: Generate embeddings for all function-level nodes
@@ -57,8 +66,8 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 	}
 
 	if len(embTexts) > 0 {
-		// Batch embed in groups of 32
-		batchSize := 32
+		// Batch embed in groups of 4
+		batchSize := 4
 		for i := 0; i < len(embTexts); i += batchSize {
 			end := i + batchSize
 			if end > len(embTexts) {
@@ -76,7 +85,6 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 	}
 
 	// Step 4: Clear existing index and edges, then insert new
-	// Delete edges first (FK to index_nodes means edges must go before nodes)
 	if err := deleteEdgesByRepo(ctx, s.db, repo.ID); err != nil {
 		return fmt.Errorf("clear old edges: %w", err)
 	}
@@ -101,17 +109,25 @@ func (s *Service) IndexRepo(ctx context.Context, repo *domain.Repository) error 
 }
 
 // ensureCloned clones the repo if it doesn't exist locally, or pulls latest
-// if it already exists.
+// if it already exists. Disables http.proxy since container can reach GitHub directly.
 func (s *Service) ensureCloned(ctx context.Context, repo *domain.Repository, path string) error {
 	// Check if already cloned
 	if _, err := os.Stat(path); err == nil {
 		// Pull latest
-		cmd := exec.CommandContext(ctx, "git", "-C", path, "pull", "origin", repo.DefaultBranch)
+		cmd := exec.CommandContext(ctx, "git",
+			"-c", "http.proxy=",
+			"-c", "https.proxy=",
+			"-c", "http.sslVerify=false",
+			"-C", path, "pull", "origin", repo.DefaultBranch)
 		return cmd.Run()
 	}
 
-	// Clone
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1",
+	// Clone (disable proxy, skip SSL verify — container DNS resolves GitHub correctly)
+	cmd := exec.CommandContext(ctx, "git",
+		"-c", "http.proxy=",
+		"-c", "https.proxy=",
+		"-c", "http.sslVerify=false",
+		"clone", "--depth", "1",
 		"--branch", repo.DefaultBranch, repo.CloneURL, path)
 	return cmd.Run()
 }
@@ -145,6 +161,9 @@ func insertEdges(ctx context.Context, db *pgxpool.Pool, repoID string, calls []*
 	defer tx.Rollback(ctx)
 
 	for _, e := range calls {
+		if !isUUID(e.CalleeID) {
+			continue
+		}
 		_, err := tx.Exec(ctx,
 			`INSERT INTO call_edges (id, repo_id, caller_id, callee_id, file_path, line) VALUES ($1,$2,$3,$4,$5,$6)`,
 			e.ID, e.RepoID, e.CallerID, e.CalleeID, e.FilePath, e.Line)
@@ -154,6 +173,10 @@ func insertEdges(ctx context.Context, db *pgxpool.Pool, repoID string, calls []*
 	}
 
 	for _, e := range deps {
+		// Skip edges with non-UUID target IDs (external deps like C includes, Go imports)
+		if !isUUID(e.TargetID) {
+			continue
+		}
 		_, err := tx.Exec(ctx,
 			`INSERT INTO dep_edges (id, repo_id, source_id, target_id, dep_type) VALUES ($1,$2,$3,$4,$5)`,
 			e.ID, e.RepoID, e.SourceID, e.TargetID, e.DepType)
@@ -163,4 +186,10 @@ func insertEdges(ctx context.Context, db *pgxpool.Pool, repoID string, calls []*
 	}
 
 	return tx.Commit(ctx)
+}
+
+// isUUID checks if a string looks like a valid UUID (36 chars, 4 hyphens).
+func isUUID(s string) bool {
+	return len(s) == 36 &&
+		s[8] == '-' && s[13] == '-' && s[18] == '-' && s[23] == '-'
 }

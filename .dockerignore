@@ -1,0 +1,10 @@
+.git
+node_modules/
+*.exe
+.env
+data/
+.vscode/
+.superpowers/
+docs/
+**/__pycache__/
+**/*.pyc

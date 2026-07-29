@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install PyTorch CPU-only (much smaller than CUDA version)
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
+
+# Install other deps
+COPY python-embedding/requirements.txt .
+RUN sed -i '/torch/d' requirements.txt && \
+    pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    "numpy<2" sentence-transformers modelscope && \
+    pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+# Generate proto stubs
+COPY proto/embedding.proto proto/
+RUN python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/embedding.proto
+
+# Copy service code
+COPY python-embedding/*.py .
+
+EXPOSE 50051
+CMD ["python", "server.py"]

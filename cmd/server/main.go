@@ -34,7 +34,7 @@ func main() {
 	defer pool.Close()
 
 	// Run migrations
-	if err := db.RunMigrations(context.Background(), pool, "migrations"); err != nil {
+	if err := db.RunMigrations(context.Background(), pool, "/migrations"); err != nil {
 		log.Printf("WARNING: migrations: %v", err)
 	}
 
@@ -95,6 +95,7 @@ func main() {
 
 	// Public routes (Any = GET+POST for GitHub OAuth callback)
 	r.Any("/auth/github/callback", authHandler.GitHubCallback)
+	r.GET("/auth/dev-login", authHandler.DevLogin)
 
 	// Protected routes
 	api := r.Group("/api")

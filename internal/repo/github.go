@@ -16,7 +16,9 @@ type GitHubRepo struct {
 func FetchGitHubRepo(accessToken, owner, repo string) (*GitHubRepo, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := http.DefaultClient.Do(req)

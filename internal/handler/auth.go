@@ -144,6 +144,28 @@ func (h *AuthHandler) upsertUser(ctx context.Context, u *githubUser) (string, er
 	return userID, err
 }
 
+func (h *AuthHandler) DevLogin(c *gin.Context) {
+	// Dev-only: bypass GitHub OAuth, create/use a local dev user
+	devUser := &githubUser{
+		ID:        0,
+		Login:     "dev",
+		Email:     "dev@localhost",
+		AvatarURL: "",
+	}
+	userID, err := h.upsertUser(c.Request.Context(), devUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("upsert dev user: %v", err)})
+		return
+	}
+	token, err := auth.GenerateToken(userID, h.cfg.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("generate token: %v", err)})
+		return
+	}
+	c.Redirect(http.StatusFound,
+		fmt.Sprintf("/?token=%s&username=%s&avatar=%s", token, devUser.Login, devUser.AvatarURL))
+}
+
 func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/auth/github/callback", h.GitHubCallback)
 	r.POST("/auth/github/callback", h.GitHubCallback)

@@ -33,7 +33,7 @@ class EmbeddingServicer(embedding_pb2_grpc.EmbeddingServiceServicer):
 
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
     embedding_pb2_grpc.add_EmbeddingServiceServicer_to_server(
         EmbeddingServicer(), server
     )
