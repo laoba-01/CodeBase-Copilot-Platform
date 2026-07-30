@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -116,6 +117,24 @@ func (h *AuthHandler) validateState(c *gin.Context, state string) bool {
 }
 
 // OAuthAuthorize generates a state token and returns the GitHub OAuth URL.
+// buildRedirectURI constructs the OAuth redirect URI from the request's Host header,
+// so it works with any domain (localhost, Cloudflare Tunnel, custom domain, etc.).
+func buildRedirectURI(c *gin.Context, path string) string {
+	scheme := "https"
+	host := c.Request.Host
+	if host == "" {
+		host = c.Request.Header.Get("X-Forwarded-Host")
+	}
+	if host == "" {
+		host = "localhost:8080"
+	}
+	// Use http for localhost, https for everything else
+	if strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1") {
+		scheme = "http"
+	}
+	return scheme + "://" + host + path
+}
+
 func (h *AuthHandler) OAuthAuthorize(c *gin.Context) {
 	state, err := generateState()
 	if err != nil {
@@ -125,9 +144,10 @@ func (h *AuthHandler) OAuthAuthorize(c *gin.Context) {
 	// Set state in a secure cookie
 	c.SetCookie("oauth_state", state, 600, "/", "", false, true)
 
+	redirectURI := buildRedirectURI(c, "/auth/github/callback")
 	authURL := fmt.Sprintf(
-		"https://github.com/login/oauth/authorize?client_id=%s&state=%s&scope=repo",
-		h.cfg.GitHubClientID, state,
+		"https://github.com/login/oauth/authorize?client_id=%s&redirect_uri=%s&state=%s&scope=repo",
+		h.cfg.GitHubClientID, url.QueryEscape(redirectURI), state,
 	)
 	c.JSON(http.StatusOK, gin.H{"url": authURL})
 }
@@ -212,9 +232,10 @@ func (h *AuthHandler) GiteeAuthorize(c *gin.Context) {
 	}
 	c.SetCookie("oauth_state", state, 600, "/", "", false, true)
 
+	redirectURI := buildRedirectURI(c, "/auth/gitee/callback")
 	authURL := fmt.Sprintf(
 		"https://gitee.com/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&state=%s",
-		h.cfg.GiteeClientID, url.QueryEscape(h.cfg.GiteeRedirectURI), state,
+		h.cfg.GiteeClientID, url.QueryEscape(redirectURI), state,
 	)
 	c.JSON(http.StatusOK, gin.H{"url": authURL})
 }
@@ -238,8 +259,8 @@ func (h *AuthHandler) GiteeCallback(c *gin.Context) {
 		return
 	}
 
-	// 1. Exchange code for access token
-	accessToken, err := exchangeGiteeToken(h.cfg.GiteeClientID, h.cfg.GiteeClientSecret, code, h.cfg.GiteeRedirectURI)
+	// 1. Exchange code for access token (must match the redirect URI used in authorize)
+	accessToken, err := exchangeGiteeToken(h.cfg.GiteeClientID, h.cfg.GiteeClientSecret, code, buildRedirectURI(c, "/auth/gitee/callback"))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "gitee authentication failed"})
 		return
