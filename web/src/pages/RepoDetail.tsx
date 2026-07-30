@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -13,6 +13,8 @@ import {
   message,
   Progress,
   Alert,
+  Row,
+  Col,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -22,9 +24,11 @@ import {
   FileOutlined,
   ReloadOutlined,
   RedoOutlined,
+  CodeOutlined,
+  FunctionOutlined,
 } from '@ant-design/icons';
 import type { DataNode } from 'antd/es/tree';
-import { getRepo, getRepoFiles, reindexRepo, FileEntry, Repository } from '../api';
+import { getRepo, getRepoFiles, getFileContent, reindexRepo, FileEntry, FileContentNode, Repository } from '../api';
 
 const statusColor: Record<string, string> = {
   pending: 'default',
@@ -37,7 +41,6 @@ const statusColor: Record<string, string> = {
 function buildFileTree(files: FileEntry[]): DataNode[] {
   const tree: DataNode[] = [];
 
-  // Find or create a node at a given level of the tree
   function findOrCreateDir(nodes: DataNode[], name: string, fullPath: string): DataNode {
     let node = nodes.find(n => n.key === fullPath);
     if (!node) {
@@ -64,7 +67,6 @@ function buildFileTree(files: FileEntry[]): DataNode[] {
       const isLast = i === parts.length - 1;
 
       if (isLast) {
-        // File node
         currentNodes.push({
           title: part,
           key: currentPath,
@@ -72,14 +74,12 @@ function buildFileTree(files: FileEntry[]): DataNode[] {
           icon: <FileOutlined />,
         });
       } else {
-        // Directory node
         const dir = findOrCreateDir(currentNodes, part, currentPath);
         currentNodes = dir.children as DataNode[];
       }
     }
   }
 
-  // Sort each level: directories first, then alphabetically
   function sortTree(nodes: DataNode[]) {
     nodes.sort((a, b) => {
       const aLeaf = a.isLeaf ? 1 : 0;
@@ -107,6 +107,11 @@ export default function RepoDetail() {
   const [fileTree, setFileTree] = useState<DataNode[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [reindexing, setReindexing] = useState(false);
+
+  // Code viewer state
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [codeNodes, setCodeNodes] = useState<FileContentNode[] | null>(null);
+  const [codeLoading, setCodeLoading] = useState(false);
 
   const fetchRepo = useCallback(async () => {
     if (!id) return;
@@ -172,10 +177,29 @@ export default function RepoDetail() {
       await reindexRepo(id);
       message.success('Reindex started');
       setRepo(prev => prev ? { ...prev, status: 'pending' } : null);
+      setSelectedFile(null);
+      setCodeNodes(null);
     } catch (err: any) {
       message.error(err.message || 'Failed to reindex');
     } finally {
       setReindexing(false);
+    }
+  };
+
+  const handleFileSelect = async (selectedKeys: React.Key[]) => {
+    if (selectedKeys.length === 0) return;
+    const path = selectedKeys[0] as string;
+    // Only fetch for leaf nodes (files), not directories
+    setSelectedFile(path);
+    setCodeLoading(true);
+    setCodeNodes(null);
+    try {
+      const nodes = await getFileContent(id!, path);
+      setCodeNodes(nodes);
+    } catch {
+      setCodeNodes([]);
+    } finally {
+      setCodeLoading(false);
     }
   };
 
@@ -213,119 +237,145 @@ export default function RepoDetail() {
   return (
     <div style={{ padding: 24 }}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {/* Header with back button */}
+        {/* Header */}
         <Space>
-          <Button
-            icon={<ArrowLeftOutlined />}
-            onClick={() => navigate('/')}
-            type="text"
-          >
-            Back
-          </Button>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')} type="text">Back</Button>
           <Typography.Title level={4} style={{ margin: 0 }}>
-            <GithubOutlined style={{ marginRight: 8 }} />
-            {repo.full_name}
+            <GithubOutlined style={{ marginRight: 8 }} />{repo.full_name}
           </Typography.Title>
         </Space>
 
-        {/* Repo info card */}
-        <Card title="Repository Information">
-          <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
-            <Descriptions.Item label="Full Name">{repo.full_name}</Descriptions.Item>
-            <Descriptions.Item label="Default Branch">
-              {repo.default_branch || '-'}
-            </Descriptions.Item>
+        {/* Repo info */}
+        <Card title="Repository Information" size="small">
+          <Descriptions column={{ xs: 1, sm: 3 }} size="small" bordered>
             <Descriptions.Item label="Status">
-              <Tag color={statusColor[repo.status] || 'default'}>
-                {repo.status}
-              </Tag>
+              <Tag color={statusColor[repo.status] || 'default'}>{repo.status}</Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Indexed At">
+            <Descriptions.Item label="Branch">{repo.default_branch || '-'}</Descriptions.Item>
+            <Descriptions.Item label="Indexed">
               {repo.indexed_at ? new Date(repo.indexed_at).toLocaleString() : '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Clone URL">
-              <Typography.Text copyable style={{ fontSize: 12 }}>
-                {repo.clone_url}
-              </Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="Created">
-              {new Date(repo.created_at).toLocaleString()}
             </Descriptions.Item>
           </Descriptions>
         </Card>
 
         {/* Processing status */}
         {isProcessing && (
-          <Card title="Indexing in Progress">
-            <Space direction="vertical" style={{ width: '100%' }}>
-              <Progress
-                percent={50}
-                status="active"
-                strokeColor={{ from: '#108ee9', to: '#87d068' }}
-              />
-              <Typography.Text type="secondary">
-                The repository is being processed. This may take a few minutes depending on the size.
-                The page will update automatically when ready.
-              </Typography.Text>
-            </Space>
+          <Card title="Indexing in Progress" size="small">
+            <Progress percent={50} status="active" />
+            <Typography.Text type="secondary">
+              Processing repository... This may take several minutes. Page auto-updates.
+            </Typography.Text>
           </Card>
         )}
 
-        {/* File tree */}
-        <Card
-          title={
-            <Space>
-              <FolderOutlined />
-              <span>File Tree</span>
-            </Space>
-          }
-          extra={
-            <Space>
-              {repo.status === 'ready' && (
-                <>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {fileTree.length > 0 ? `${fileTree.length} top-level items` : ''}
-                  </Typography.Text>
-                  <Button
-                    icon={<RedoOutlined />}
-                    onClick={handleReindex}
-                    loading={reindexing}
-                    size="small"
-                  >
-                    Reindex
-                  </Button>
-                </>
+        {/* Main content: File tree + Code viewer */}
+        <Row gutter={16}>
+          {/* File tree */}
+          <Col xs={24} md={8}>
+            <Card
+              title={<Space><FolderOutlined /><span>Files</span></Space>}
+              size="small"
+              extra={
+                repo.status === 'ready' && (
+                  <Button icon={<RedoOutlined />} onClick={handleReindex} loading={reindexing} size="small">Reindex</Button>
+                )
+              }
+              style={{ height: 'calc(100vh - 320px)', overflow: 'auto' }}
+            >
+              {repo.status === 'ready' ? (
+                filesLoading ? (
+                  <Spin tip="Loading..." />
+                ) : fileTree.length > 0 ? (
+                  <Tree
+                    showIcon
+                    treeData={fileTree}
+                    onSelect={handleFileSelect}
+                    selectedKeys={selectedFile ? [selectedFile] : []}
+                    icon={({ isLeaf }) => isLeaf ? <FileOutlined /> : <FolderOutlined />}
+                  />
+                ) : (
+                  <Empty description="No files indexed" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )
+              ) : (
+                <Empty description="Indexing required" image={Empty.PRESENTED_IMAGE_SIMPLE} />
               )}
-            </Space>
-          }
-        >
-          {repo.status === 'ready' ? (
-            filesLoading ? (
-              <div style={{ textAlign: 'center', padding: 20 }}>
-                <Spin tip="Loading files..." />
-              </div>
-            ) : fileTree.length > 0 ? (
-              <Tree
-                showIcon
-                defaultExpandAll
-                treeData={fileTree}
-                icon={({ isLeaf }) =>
-                  isLeaf ? <FileOutlined /> : <FolderOutlined />
-                }
-              />
-            ) : (
-              <Empty
-                description="No indexed files found. Try reindexing."
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            )
-          ) : (
-            <Empty
-              description="Repository must be indexed before the file tree is available."
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-            />
-          )}
-        </Card>
+            </Card>
+          </Col>
+
+          {/* Code viewer */}
+          <Col xs={24} md={16}>
+            <Card
+              title={
+                <Space>
+                  <CodeOutlined />
+                  <span>{selectedFile || 'Select a file to view code'}</span>
+                </Space>
+              }
+              size="small"
+              style={{ height: 'calc(100vh - 320px)', overflow: 'auto' }}
+              bodyStyle={{ padding: 0 }}
+            >
+              {!selectedFile ? (
+                <div style={{ padding: 60, textAlign: 'center', opacity: 0.4 }}>
+                  <CodeOutlined style={{ fontSize: 48, marginBottom: 16 }} />
+                  <Typography.Text type="secondary">Click a file in the tree to view its code</Typography.Text>
+                </div>
+              ) : codeLoading ? (
+                <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>
+              ) : codeNodes && codeNodes.length === 0 ? (
+                <div style={{ padding: 40, textAlign: 'center', opacity: 0.5 }}>
+                  <Typography.Text type="secondary">No indexed symbols found in this file</Typography.Text>
+                </div>
+              ) : (
+                <div style={{ padding: '8px 0' }}>
+                  {codeNodes?.map((node) => (
+                    <Card
+                      key={node.id}
+                      size="small"
+                      type="inner"
+                      style={{ margin: '0 8px 8px 8px' }}
+                      title={
+                        <Space size="small">
+                          <FunctionOutlined style={{ color: '#1890ff' }} />
+                          <Typography.Text code strong>{node.name}</Typography.Text>
+                          <Tag color="blue">{node.type}</Tag>
+                          <Tag>{node.language}</Tag>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            L{node.start_line}-{node.end_line}
+                          </Typography.Text>
+                        </Space>
+                      }
+                    >
+                      {node.signature && (
+                        <Typography.Paragraph style={{ marginBottom: 8 }}>
+                          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                            {node.signature}
+                          </Typography.Text>
+                        </Typography.Paragraph>
+                      )}
+                      {node.code && (
+                        <pre style={{
+                          background: '#1e1e1e',
+                          color: '#d4d4d4',
+                          padding: '12px 16px',
+                          borderRadius: 6,
+                          fontSize: 13,
+                          lineHeight: 1.6,
+                          overflow: 'auto',
+                          maxHeight: 400,
+                          margin: 0,
+                          fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace",
+                        }}>
+                          <code>{node.code}</code>
+                        </pre>
+                      )}
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </Col>
+        </Row>
 
         {/* Ask button */}
         <div style={{ textAlign: 'center' }}>
@@ -338,11 +388,6 @@ export default function RepoDetail() {
           >
             Ask About This Codebase
           </Button>
-          {repo.status !== 'ready' && (
-            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-              Q&A is available once the repository has been indexed.
-            </Typography.Text>
-          )}
         </div>
       </Space>
     </div>

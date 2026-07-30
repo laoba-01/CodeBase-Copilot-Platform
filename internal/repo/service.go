@@ -173,6 +173,43 @@ type GraphData struct {
 	DepEdges  []domain.DepEdge  `json:"dep_edges"`
 }
 
+// FileContentNode represents an indexed node with code content for a file.
+type FileContentNode struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Signature string `json:"signature"`
+	Code      string `json:"code"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Language  string `json:"language"`
+}
+
+// GetFileNodes returns all indexed nodes for a specific file path in a repo.
+func (s *Service) GetFileNodes(ctx context.Context, repoID, filePath string) ([]FileContentNode, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, type, name, COALESCE(signature,''), COALESCE(code,''), start_line, end_line, COALESCE(language,'')
+		FROM index_nodes
+		WHERE repo_id = $1 AND file_path = $2 AND type != 'file'
+		ORDER BY start_line ASC
+	`, repoID, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("query file nodes: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []FileContentNode
+	for rows.Next() {
+		var n FileContentNode
+		if err := rows.Scan(&n.ID, &n.Type, &n.Name, &n.Signature, &n.Code,
+			&n.StartLine, &n.EndLine, &n.Language); err != nil {
+			return nil, fmt.Errorf("scan node: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, nil
+}
+
 // SearchResult is a lightweight code search hit.
 type SearchResult struct {
 	ID        string `json:"id"`

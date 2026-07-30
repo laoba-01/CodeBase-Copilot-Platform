@@ -106,6 +106,21 @@ export async function reindexRepo(id: string): Promise<{ status: string }> {
   return api(`/repos/${id}/reindex`, { method: 'POST' });
 }
 
+export interface FileContentNode {
+  id: string;
+  type: string;
+  name: string;
+  signature: string;
+  code: string;
+  start_line: number;
+  end_line: number;
+  language: string;
+}
+
+export async function getFileContent(repoId: string, filePath: string): Promise<FileContentNode[]> {
+  return api(`/repos/${repoId}/file-content?path=${encodeURIComponent(filePath)}`);
+}
+
 // Task API
 export async function getTask(id: string): Promise<Task> {
   return api(`/tasks/${id}`);

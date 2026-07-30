@@ -77,10 +77,12 @@ func parseCtagsLine(line string) *ctagsEntry {
 	}
 
 	// Parse extension fields: key:value
+	// The first field after address (i==3) is always the kind as a bare value.
+	kindParsed := false
 	for i := 2; i < len(parts); i++ {
 		field := parts[i]
 		if idx := strings.Index(field, `;"`); idx >= 0 && i == 2 {
-			// already handled address
+			// Strip address terminator; remainder (if any) is part of the address field
 			field = field[idx+2:]
 			if field == "" {
 				continue
@@ -88,6 +90,11 @@ func parseCtagsLine(line string) *ctagsEntry {
 		}
 		kv := strings.SplitN(field, ":", 2)
 		if len(kv) != 2 {
+			// Bare value without "key:" prefix → this is the kind
+			if !kindParsed && field != "" {
+				entry.Kind = field
+				kindParsed = true
+			}
 			continue
 		}
 		key := kv[0]
@@ -149,43 +156,49 @@ func detectLanguage(repoPath string) string {
 }
 
 // sourceExtensions returns file extensions to scan for a given language.
-func sourceExtensions(lang string) string {
+func sourceExtensions(lang string) []string {
 	switch lang {
 	case "c":
-		return `\.(c|h)$`
+		return []string{".c", ".h"}
 	case "cpp":
-		return `\.(cpp|hpp|cc|cxx|hxx)$`
+		return []string{".cpp", ".hpp", ".cc", ".cxx", ".hxx"}
 	case "python":
-		return `\.(py)$`
+		return []string{".py"}
 	case "java":
-		return `\.(java)$`
+		return []string{".java"}
 	case "javascript", "typescript":
-		return `\.(js|ts|jsx|tsx)$`
+		return []string{".js", ".ts", ".jsx", ".tsx"}
 	case "rust":
-		return `\.(rs)$`
+		return []string{".rs"}
 	case "ruby":
-		return `\.(rb)$`
+		return []string{".rb"}
 	case "php":
-		return `\.(php)$`
+		return []string{".php"}
 	case "swift":
-		return `\.(swift)$`
+		return []string{".swift"}
 	case "kotlin":
-		return `\.(kt)$`
+		return []string{".kt"}
 	case "scala":
-		return `\.(scala)$`
+		return []string{".scala"}
 	case "csharp":
-		return `\.(cs)$`
+		return []string{".cs"}
 	case "lua":
-		return `\.(lua)$`
+		return []string{".lua"}
 	default:
-		return `\.(c|h|cpp|hpp|py|java|js|ts|rs|rb|php|swift|kt|scala|cs|lua)$`
+		return []string{".c", ".h", ".cpp", ".hpp", ".py", ".java", ".js", ".ts", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".cs", ".lua"}
 	}
 }
 
 // ParseUniversal parses any codebase using universal-ctags.
 func ParseUniversal(repoPath, repoID string) ([]*domain.IndexNode, []*domain.CallEdge, []*domain.DepEdge, error) {
 	lang := detectLanguage(repoPath)
-	extPattern := sourceExtensions(lang)
+	exts := sourceExtensions(lang)
+
+	// Build an extension lookup set
+	extSet := make(map[string]bool, len(exts))
+	for _, e := range exts {
+		extSet[e] = true
+	}
 
 	// Collect source file paths
 	var files []string
@@ -199,13 +212,8 @@ func ParseUniversal(repoPath, repoID string) ([]*domain.IndexNode, []*domain.Cal
 				return nil
 			}
 		}
-		ext := filepath.Ext(info.Name())
-		for _, e := range strings.Split(strings.Trim(extPattern, `\$`), "|") {
-			e = strings.Trim(e, `\()`)
-			if "."+e == ext {
-				files = append(files, path)
-				break
-			}
+		if extSet[filepath.Ext(info.Name())] {
+			files = append(files, path)
 		}
 		return nil
 	})
@@ -228,7 +236,7 @@ func ParseUniversal(repoPath, repoID string) ([]*domain.IndexNode, []*domain.Cal
 
 	// Run ctags with default output + extended fields
 	cmd := exec.Command("ctags",
-		"--fields=+lnS",
+		"--fields=+lKnS",
 		"-f", "-",
 		"-L", tmpFile.Name(),
 	)
@@ -362,6 +370,9 @@ func mapKindToType(kind, lang string) domain.IndexNodeType {
 		return domain.NodeTypeMethod
 	case "c", "class", "struct", "interface", "enum":
 		return domain.NodeTypeClass
+	case "v", "variable":
+		// Skip variables — we only index structural elements
+		return ""
 	default:
 		return ""
 	}

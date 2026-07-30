@@ -180,12 +180,43 @@ func (h *RepoHandler) Search(c *gin.Context) {
 	c.JSON(http.StatusOK, results)
 }
 
+func (h *RepoHandler) FileContent(c *gin.Context) {
+	repoID := c.Param("id")
+	userID := auth.GetUserID(c)
+	filePath := c.Query("path")
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path query param is required"})
+		return
+	}
+
+	// Verify repo ownership
+	if _, err := h.svc.Get(c.Request.Context(), repoID, userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	nodes, err := h.svc.GetFileNodes(c.Request.Context(), repoID, filePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if nodes == nil {
+		nodes = []repo.FileContentNode{}
+	}
+	c.JSON(http.StatusOK, nodes)
+}
+
 func (h *RepoHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.POST("/repos", h.Create)
 	r.GET("/repos", h.List)
 	r.GET("/repos/:id", h.Get)
 	r.DELETE("/repos/:id", h.Delete)
 	r.GET("/repos/:id/files", h.Files)
+	r.GET("/repos/:id/file-content", h.FileContent)
 	r.GET("/repos/:id/graph", h.Graph)
 	r.POST("/repos/:id/reindex", h.Reindex)
 	r.POST("/repos/:id/search", h.Search)

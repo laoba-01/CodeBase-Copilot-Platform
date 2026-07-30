@@ -172,11 +172,15 @@ func (s *Service) ensureCloned(ctx context.Context, repo *domain.Repository, pat
 
 	// Check if already cloned
 	if _, err := os.Stat(path); err == nil {
-		// Pull latest
-		args := append([]string{}, gitArgs...)
-		args = append(args, "-C", path, "pull", "origin", repo.DefaultBranch)
-		cmd := exec.CommandContext(ctx, "git", args...)
-		return cmd.Run()
+		// Try to pull latest, but continue on failure (network might be flaky)
+		pullArgs := append([]string{}, gitArgs...)
+		pullArgs = append(pullArgs, "-C", path, "pull", "origin", repo.DefaultBranch)
+		pullCmd := exec.CommandContext(ctx, "git", pullArgs...)
+		if pullErr := pullCmd.Run(); pullErr != nil {
+			// Log but don't fail — use existing code
+			fmt.Fprintf(os.Stderr, "WARNING: git pull failed for %s: %v (using existing code)\n", repo.Name, pullErr)
+		}
+		return nil
 	}
 
 	// Clone
