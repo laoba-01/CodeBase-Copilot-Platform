@@ -202,6 +202,159 @@ func (h *AuthHandler) upsertUser(ctx context.Context, u *githubUser) (string, er
 	return userID, err
 }
 
+// ── Gitee OAuth ──
+
+func (h *AuthHandler) GiteeAuthorize(c *gin.Context) {
+	state, err := generateState()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state"})
+		return
+	}
+	c.SetCookie("oauth_state", state, 600, "/", "", false, true)
+
+	authURL := fmt.Sprintf(
+		"https://gitee.com/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&state=%s",
+		h.cfg.GiteeClientID, url.QueryEscape(h.cfg.GiteeRedirectURI), state,
+	)
+	c.JSON(http.StatusOK, gin.H{"url": authURL})
+}
+
+func (h *AuthHandler) GiteeCallback(c *gin.Context) {
+	// Support both GET (Gitee redirect) and POST (frontend fetch)
+	code := c.Query("code")
+	state := c.Query("state")
+	if code == "" {
+		var req githubCallbackReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+			return
+		}
+		code = req.Code
+		state = req.State
+	}
+
+	if state == "" || !h.validateState(c, state) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or missing state parameter"})
+		return
+	}
+
+	// 1. Exchange code for access token
+	accessToken, err := exchangeGiteeToken(h.cfg.GiteeClientID, h.cfg.GiteeClientSecret, code, h.cfg.GiteeRedirectURI)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "gitee authentication failed"})
+		return
+	}
+
+	// 2. Get user info from Gitee
+	user, err := fetchGiteeUser(accessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch user information"})
+		return
+	}
+
+	// 3. Upsert user
+	userID, err := h.upsertGiteeUser(c.Request.Context(), user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user account"})
+		return
+	}
+
+	// 4. Generate JWT
+	token, err := auth.GenerateToken(userID, h.cfg.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate session"})
+		return
+	}
+
+	if c.Request.Method == "GET" {
+		c.Redirect(http.StatusFound,
+			fmt.Sprintf("/?token=%s&username=%s&avatar=%s", token, user.Login, user.AvatarURL))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": token,
+		"user": gin.H{
+			"id":         userID,
+			"username":   user.Login,
+			"avatar_url": user.AvatarURL,
+		},
+	})
+}
+
+type giteeUser struct {
+	ID        int64  `json:"id"`
+	Login     string `json:"login"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+type giteeTokenResp struct {
+	AccessToken string `json:"access_token"`
+	Error       string `json:"error"`
+}
+
+func exchangeGiteeToken(clientID, clientSecret, code, redirectURI string) (string, error) {
+	data := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"redirect_uri":  {redirectURI},
+	}
+	resp, err := httpClient.PostForm("https://gitee.com/oauth/token", data)
+	if err != nil {
+		return "", fmt.Errorf("gitee token request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result giteeTokenResp
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("gitee token response: %w", err)
+	}
+	if result.Error != "" {
+		return "", fmt.Errorf("gitee oauth error: %s", result.Error)
+	}
+	return result.AccessToken, nil
+}
+
+func fetchGiteeUser(token string) (*giteeUser, error) {
+	req, err := http.NewRequest("GET", "https://gitee.com/api/v5/user", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gitee api request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gitee api returned %d", resp.StatusCode)
+	}
+
+	var user giteeUser
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, fmt.Errorf("parse gitee user: %w", err)
+	}
+	return &user, nil
+}
+
+func (h *AuthHandler) upsertGiteeUser(ctx context.Context, u *giteeUser) (string, error) {
+	var userID string
+	err := h.db.QueryRow(ctx, `
+		INSERT INTO users (github_id, gitee_id, username, email, avatar_url, provider)
+		VALUES (NULL, $1, $2, $3, $4, 'gitee')
+		ON CONFLICT (gitee_id) DO UPDATE SET username=$2, email=$3, avatar_url=$4
+		RETURNING id
+	`, u.ID, u.Login, u.Email, u.AvatarURL).Scan(&userID)
+	return userID, err
+}
+
 func (h *AuthHandler) DevLogin(c *gin.Context) {
 	// Only available in development mode
 	if !h.cfg.DevMode {
@@ -231,7 +384,12 @@ func (h *AuthHandler) DevLogin(c *gin.Context) {
 }
 
 func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
+	// GitHub
 	r.GET("/auth/github/authorize", h.OAuthAuthorize)
 	r.GET("/auth/github/callback", h.GitHubCallback)
 	r.POST("/auth/github/callback", h.GitHubCallback)
+	// Gitee
+	r.GET("/auth/gitee/authorize", h.GiteeAuthorize)
+	r.GET("/auth/gitee/callback", h.GiteeCallback)
+	r.POST("/auth/gitee/callback", h.GiteeCallback)
 }

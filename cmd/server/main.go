@@ -114,8 +114,11 @@ func main() {
 		c.Next()
 	})
 
-	// Public routes (Any = GET+POST for GitHub OAuth callback)
+	// Public routes (Any = GET+POST for OAuth callbacks)
 	r.Any("/auth/github/callback", authHandler.GitHubCallback)
+	r.GET("/auth/github/authorize", authHandler.OAuthAuthorize)
+	r.Any("/auth/gitee/callback", authHandler.GiteeCallback)
+	r.GET("/auth/gitee/authorize", authHandler.GiteeAuthorize)
 	r.GET("/auth/dev-login", authHandler.DevLogin)
 
 	// Protected routes with rate limiting

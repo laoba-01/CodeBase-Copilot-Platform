@@ -146,6 +146,16 @@ export async function githubCallback(code: string): Promise<{ token: string; use
   return res.json();
 }
 
+export async function giteeCallback(code: string): Promise<{ token: string; user: any }> {
+  const res = await fetch('/auth/gitee/callback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // Ask API with SSE streaming
 export function askStream(
   repoId: string,

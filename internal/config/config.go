@@ -9,6 +9,9 @@ type Config struct {
 	JWTSecret          string
 	GitHubClientID     string
 	GitHubClientSecret string
+	GiteeClientID      string
+	GiteeClientSecret  string
+	GiteeRedirectURI   string
 	EmbeddingAddr      string
 	LLMProvider        string
 	LLMAPIKey          string
@@ -25,6 +28,9 @@ func Load() *Config {
 		JWTSecret:          env("JWT_SECRET", ""),
 		GitHubClientID:     env("GITHUB_CLIENT_ID", ""),
 		GitHubClientSecret: env("GITHUB_CLIENT_SECRET", ""),
+		GiteeClientID:      env("GITEE_CLIENT_ID", ""),
+		GiteeClientSecret:  env("GITEE_CLIENT_SECRET", ""),
+		GiteeRedirectURI:   env("GITEE_REDIRECT_URI", "http://localhost:8080/auth/gitee/callback"),
 		EmbeddingAddr:      env("EMBEDDING_ADDR", "localhost:50051"),
 		LLMProvider:        env("LLM_PROVIDER", "claude"),
 		LLMAPIKey:          env("LLM_API_KEY", ""),

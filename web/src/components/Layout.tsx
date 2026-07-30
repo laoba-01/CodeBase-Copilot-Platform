@@ -7,6 +7,7 @@ import {
   QuestionCircleOutlined,
   LogoutOutlined,
   LoginOutlined,
+  GitlabOutlined,
 } from '@ant-design/icons';
 
 const { Header, Sider, Content } = AntLayout;
@@ -101,19 +102,35 @@ export default function Layout({ children }: LayoutProps) {
               Logout
             </Button>
           ) : (
-            <Button
-              type="text"
-              icon={<LoginOutlined />}
-              onClick={() => {
-                const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID;
-                if (clientId) {
-                  window.location.href = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=repo`;
-                }
-              }}
-              style={{ color: '#fff' }}
-            >
-              Login with GitHub
-            </Button>
+            <Space size="small">
+              <Button
+                type="text"
+                icon={<GithubOutlined />}
+                onClick={() => {
+                  const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID;
+                  if (clientId) {
+                    window.location.href = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=repo`;
+                  }
+                }}
+                style={{ color: '#fff' }}
+              >
+                GitHub
+              </Button>
+              <Button
+                type="text"
+                icon={<GitlabOutlined />}
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/auth/gitee/authorize');
+                    const { url } = await res.json();
+                    if (url) window.location.href = url;
+                  } catch { /* ignore */ }
+                }}
+                style={{ color: '#fff' }}
+              >
+                Gitee
+              </Button>
+            </Space>
           )}
         </Space>
       </Header>
