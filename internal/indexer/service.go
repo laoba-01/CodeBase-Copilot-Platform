@@ -154,27 +154,35 @@ func (s *Service) recordTaskFail(ctx context.Context, taskID, errMsg string) {
 	s.taskFail(ctx, taskID, errMsg)
 }
 
-// ensureCloned clones the repo if it doesn't exist locally, or pulls latest
-// if it already exists. Disables http.proxy since container can reach GitHub directly.
+// ensureCloned clones the repo if it doesn't exist locally, or pulls latest.
+// It respects HTTP_PROXY/HTTPS_PROXY environment variables for environments
+// that need a proxy to reach GitHub (e.g. Docker behind a host proxy).
+// SSL verification is disabled for environments with custom CA certificates.
 func (s *Service) ensureCloned(ctx context.Context, repo *domain.Repository, path string) error {
+	gitArgs := []string{
+		"-c", "http.sslVerify=false",
+	}
+
+	// Only set proxy override if explicit env var is present;
+	// otherwise inherit from the environment (global git config or env vars).
+	if proxy := os.Getenv("GIT_PROXY"); proxy != "" {
+		gitArgs = append(gitArgs, "-c", "http.proxy="+proxy)
+		gitArgs = append(gitArgs, "-c", "https.proxy="+proxy)
+	}
+
 	// Check if already cloned
 	if _, err := os.Stat(path); err == nil {
 		// Pull latest
-		cmd := exec.CommandContext(ctx, "git",
-			"-c", "http.proxy=",
-			"-c", "https.proxy=",
-			"-c", "http.sslVerify=false",
-			"-C", path, "pull", "origin", repo.DefaultBranch)
+		args := append([]string{}, gitArgs...)
+		args = append(args, "-C", path, "pull", "origin", repo.DefaultBranch)
+		cmd := exec.CommandContext(ctx, "git", args...)
 		return cmd.Run()
 	}
 
-	// Clone (disable proxy, skip SSL verify — container DNS resolves GitHub correctly)
-	cmd := exec.CommandContext(ctx, "git",
-		"-c", "http.proxy=",
-		"-c", "https.proxy=",
-		"-c", "http.sslVerify=false",
-		"clone", "--depth", "1",
-		"--branch", repo.DefaultBranch, repo.CloneURL, path)
+	// Clone
+	args := append([]string{}, gitArgs...)
+	args = append(args, "clone", "--depth", "1", "--branch", repo.DefaultBranch, repo.CloneURL, path)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	return cmd.Run()
 }
 

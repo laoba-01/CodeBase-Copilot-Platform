@@ -1,6 +1,9 @@
 services:
   app:
     build: .
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "8080:8080"
     env_file: .env
@@ -8,12 +11,12 @@ services:
       DATABASE_URL: postgres://copilot:copilot@db:5432/copilot?sslmode=disable
       REDIS_URL: redis://redis:6379
       EMBEDDING_ADDR: embedding:50051
-      HTTP_PROXY: http://host.docker.internal:7897
-      HTTPS_PROXY: http://host.docker.internal:7897
-      http_proxy: http://host.docker.internal:7897
-      https_proxy: http://host.docker.internal:7897
-      NO_PROXY: localhost,127.0.0.1,db,redis,embedding,.local
-      no_proxy: localhost,127.0.0.1,db,redis,embedding,.local
+      # HTTP_PROXY: http://host.docker.internal:7897
+      # HTTPS_PROXY: http://host.docker.internal:7897
+      # http_proxy: http://host.docker.internal:7897
+      # https_proxy: http://host.docker.internal:7897
+      # NO_PROXY: localhost,127.0.0.1,db,redis,embedding,.local
+      # no_proxy: localhost,127.0.0.1,db,redis,embedding,.local
     depends_on:
       db:
         condition: service_healthy
