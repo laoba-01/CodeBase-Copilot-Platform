@@ -77,6 +77,12 @@ func (h *AskHandler) Ask(c *gin.Context) {
 	result, err := h.rag.Ask(c.Request.Context(), req.RepoID, req.Question, history, c.Writer)
 	if err != nil {
 		log.Printf("ERROR: RAG pipeline failed: %v", err)
+		// If the RAG service already started streaming SSE (headers sent), it already wrote
+		// an error event. Otherwise we need to write a JSON error response.
+		if c.Writer.Written() {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Q&A service temporarily unavailable"})
 		return
 	}
 

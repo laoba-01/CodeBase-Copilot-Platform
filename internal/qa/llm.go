@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 type LLMConfig struct {
@@ -22,7 +23,9 @@ type LLMClient struct {
 }
 
 func NewLLMClient(cfg LLMConfig) *LLMClient {
-	return &LLMClient{cfg: cfg, http: &http.Client{}}
+	return &LLMClient{cfg: cfg, http: &http.Client{
+		Timeout: 120 * time.Second, // LLM streaming can take a while
+	}}
 }
 
 type ChatMessage struct {

@@ -38,6 +38,11 @@ func main() {
 		log.Printf("WARNING: migrations: %v", err)
 	}
 
+	// Recover repos stuck in transient states from a previous crash
+	if err := db.RecoverStuckRepos(context.Background(), pool); err != nil {
+		log.Printf("WARNING: stuck repo recovery: %v", err)
+	}
+
 	// Embedding client
 	embClient, err := embedding.NewClient(context.Background(), cfg.EmbeddingAddr)
 	if err != nil {
@@ -87,9 +92,12 @@ func main() {
 	// Gin router
 	r := gin.Default()
 
-	// CORS
+	// Global middleware: body size limit (1MB) and rate limiting
+	r.Use(handler.BodyLimit(1 << 20)) // 1 MB max request body
+
+	// CORS with configurable origin (never wildcard in production)
 	r.Use(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Origin", cfg.AllowedOrigin)
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		if c.Request.Method == "OPTIONS" {
@@ -99,25 +107,65 @@ func main() {
 		c.Next()
 	})
 
+	// Security headers
+	r.Use(func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Next()
+	})
+
 	// Public routes (Any = GET+POST for GitHub OAuth callback)
 	r.Any("/auth/github/callback", authHandler.GitHubCallback)
 	r.GET("/auth/dev-login", authHandler.DevLogin)
 
-	// Protected routes
+	// Protected routes with rate limiting
 	api := r.Group("/api")
 	api.Use(auth.RequireAuth(cfg.JWTSecret))
+	api.Use(handler.RateLimit(100, 200)) // 100 req/s burst 200
 	repoHandler.RegisterRoutes(api)
 	taskHandler.RegisterRoutes(api)
 	convHandler.RegisterRoutes(api)
 	if askHandler != nil {
-		askHandler.RegisterRoutes(api)
+		// Stricter rate limit for the expensive LLM endpoint
+		askGroup := api.Group("")
+		askGroup.Use(handler.StrictRateLimit(5, 10)) // 5 req/s burst 10
+		askHandler.RegisterRoutes(askGroup)
 	}
 
-	// Health check
+	// Rate limit auth endpoints
+	r.Use(handler.RateLimit(20, 40)) // 20 req/s burst 40 for auth routes
+
+	// Health check with dependency verification
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
+		healthy := true
+		checks := gin.H{}
+
+		// Check DB
+		if err := pool.Ping(c.Request.Context()); err != nil {
+			checks["database"] = "unhealthy"
+			healthy = false
+		} else {
+			checks["database"] = "ok"
+		}
+
+		// Check embedding
+		if embClient != nil {
+			checks["embedding"] = "ok"
+		} else {
+			checks["embedding"] = "unavailable"
+		}
+
+		status := "ok"
+		httpStatus := http.StatusOK
+		if !healthy {
+			status = "degraded"
+			httpStatus = http.StatusServiceUnavailable
+		}
+
+		c.JSON(httpStatus, gin.H{
+			"status":  status,
 			"version": "0.1.0",
+			"checks":  checks,
 		})
 	})
 
@@ -136,10 +184,13 @@ func main() {
 		log.Printf("WARNING: web/dist not found; frontend not served")
 	}
 
-	// Graceful shutdown with http.Server
+	// Graceful shutdown with http.Server (with timeouts)
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: r,
+		Addr:         ":" + cfg.Port,
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 120 * time.Second, // Long timeout for SSE streaming
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// Signal handler for graceful shutdown

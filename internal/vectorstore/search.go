@@ -28,9 +28,6 @@ func NewSearcher(db *pgxpool.Pool) *Searcher {
 func (s *Searcher) SemanticSearch(ctx context.Context, repoID string, queryVec []float32, topK int) ([]SearchResult, error) {
 	vecStr := vectorToString(queryVec)
 
-	// Ensure ivfflat index is created first time
-	s.db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_nodes_embedding ON index_nodes USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`)
-
 	rows, err := s.db.Query(ctx, `
 		SELECT id, repo_id, type, name, signature, code, file_path,
 		       start_line, end_line, summary, language, package,

@@ -5,18 +5,14 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     env_file: .env
     environment:
       DATABASE_URL: postgres://copilot:copilot@db:5432/copilot?sslmode=disable
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:copilot-redis@redis:6379
       EMBEDDING_ADDR: embedding:50051
-      # HTTP_PROXY: http://host.docker.internal:7897
-      # HTTPS_PROXY: http://host.docker.internal:7897
-      # http_proxy: http://host.docker.internal:7897
-      # https_proxy: http://host.docker.internal:7897
-      # NO_PROXY: localhost,127.0.0.1,db,redis,embedding,.local
-      # no_proxy: localhost,127.0.0.1,db,redis,embedding,.local
+      DEV_MODE: "false"
+      CORS_ORIGIN: "http://localhost:8080"
     depends_on:
       db:
         condition: service_healthy
@@ -25,6 +21,7 @@ services:
     volumes:
       - ./data/repos:/data/repos
       - ./web/dist:/app/web/dist
+    restart: unless-stopped
 
   db:
     image: pgvector/pgvector:pg16
@@ -33,7 +30,7 @@ services:
       POSTGRES_PASSWORD: copilot
       POSTGRES_DB: copilot
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -41,22 +38,26 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    command: redis-server --requirepass copilot-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
 
   embedding:
     build:
       context: .
       dockerfile: python-embedding/Dockerfile.cpu
     ports:
-      - "50051:50051"
+      - "127.0.0.1:50051:50051"
     environment:
       MODELSCOPE_CACHE: /modelscope-cache
     volumes:
       - modelscope_data:/modelscope-cache
+    restart: unless-stopped
 
 volumes:
   pgdata:

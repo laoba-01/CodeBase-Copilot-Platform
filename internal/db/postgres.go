@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,6 +16,10 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parse db config: %w", err)
 	}
 	cfg.MaxConns = 20
+	cfg.MinConns = 2
+	cfg.MaxConnLifetime = 1 * time.Hour
+	cfg.MaxConnIdleTime = 10 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -26,6 +31,18 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
+}
+
+// RecoverStuckRepos resets repos stuck in transient states back to error on startup.
+func RecoverStuckRepos(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, `
+		UPDATE repos SET status = 'error'
+		WHERE status IN ('pending', 'cloning', 'indexing')
+	`)
+	if err != nil {
+		return fmt.Errorf("recover stuck repos: %w", err)
+	}
+	return nil
 }
 
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool, dir string) error {
