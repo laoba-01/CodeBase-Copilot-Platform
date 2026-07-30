@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/codebase-copilot/core/internal/domain"
@@ -52,6 +53,35 @@ func (s *Service) Fail(ctx context.Context, taskID, errMsg string) error {
 		`UPDATE tasks SET status = 'failed', error = $1, updated_at = now() WHERE id = $2`,
 		errMsg, taskID)
 	return err
+}
+
+func (s *Service) List(ctx context.Context, repoID string) ([]domain.Task, error) {
+	var rows pgx.Rows
+	var err error
+	if repoID != "" {
+		rows, err = s.db.Query(ctx,
+			`SELECT id, repo_id, type, status, progress, COALESCE(error,''), COALESCE(result,''), created_at, updated_at
+			 FROM tasks WHERE repo_id = $1 ORDER BY created_at DESC`, repoID)
+	} else {
+		rows, err = s.db.Query(ctx,
+			`SELECT id, repo_id, type, status, progress, COALESCE(error,''), COALESCE(result,''), created_at, updated_at
+			 FROM tasks ORDER BY created_at DESC`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []domain.Task
+	for rows.Next() {
+		var t domain.Task
+		if err := rows.Scan(&t.ID, &t.RepoID, &t.Type, &t.Status, &t.Progress,
+			&t.Error, &t.Result, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
 }
 
 func (s *Service) Get(ctx context.Context, taskID string) (*domain.Task, error) {

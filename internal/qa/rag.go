@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 
@@ -87,9 +88,10 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 		}
 	}
 
-	// Step 6: Build context from top results
+	// Step 6: Build context from top results and calculate confidence
 	var contextParts []string
 	var citations []domain.Citation
+	var totalScore float64
 	for _, rr := range reranked {
 		if rr.Index < len(unique) {
 			n := unique[rr.Index].Node
@@ -103,23 +105,41 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 				Content: n.Code,
 				Score:   float64(rr.Score),
 			})
+			totalScore += float64(rr.Score)
 		}
 	}
 	contextBlock := fmt.Sprintf("You are analyzing a code repository. Use the following code snippets to answer the question.\n\nCODE:\n%s\n\n---\n", join(contextParts, "\n\n"))
+
+	// Calculate confidence from rerank scores (normalized 0-1)
+	confidence := 0.5
+	if len(reranked) > 0 {
+		// Sigmoid-like normalization of average score
+		avgScore := totalScore / float64(len(reranked))
+		confidence = 1.0 / (1.0 + math.Exp(-4*(avgScore-0.5)))
+		confidence = math.Round(confidence*100) / 100
+	}
 
 	// Step 7: Build messages for LLM
 	systemMsg := ChatMessage{Role: "system", Content: "You are an expert code analyst. Answer questions based on the provided code snippets. Be specific, reference file paths and line numbers when citing code. If the provided context isn't sufficient, say so."}
 	userMsg := ChatMessage{Role: "user", Content: contextBlock + "\n\nQuestion: " + question}
 
-	// Insert conversation history in chronological order (simplified: last 6 messages)
+	// Insert conversation history using approximate token-aware truncation
+	// ~4 chars per token, aim for ~2000 tokens max for history
 	var historyMsgs []ChatMessage
-	start := len(history) - 6
-	if start < 0 {
-		start = 0
+	historyTokens := 0
+	maxHistoryTokens := 2000
+	for i := len(history) - 1; i >= 0; i-- {
+		// Estimate tokens: ~4 chars per token
+		msgTokens := len(history[i].Content) / 4
+		if historyTokens+msgTokens > maxHistoryTokens {
+			break
+		}
+		historyTokens += msgTokens
+		historyMsgs = append([]ChatMessage{
+			{Role: history[i].Role, Content: history[i].Content},
+		}, historyMsgs...)
 	}
-	for i := start; i < len(history); i++ {
-		historyMsgs = append(historyMsgs, ChatMessage{Role: history[i].Role, Content: history[i].Content})
-	}
+
 	// Insert history after system message, before user context
 	messages := append([]ChatMessage{systemMsg}, append(historyMsgs, userMsg)...)
 
@@ -154,7 +174,7 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 
 	// Step 10: Send done event
 	done := domain.SSEDone{
-		Confidence: 0.85, // TODO: calculate from rerank scores
+		Confidence: confidence,
 		Tokens:     totalTokens,
 	}
 	data, _ := json.Marshal(done)
@@ -164,7 +184,7 @@ func (s *RAGService) Ask(ctx context.Context, repoID, question string, history [
 	result := &AskResult{
 		FullText:   fullText.String(),
 		Citations:  citations,
-		Confidence: 0.85,
+		Confidence: confidence,
 		Tokens:     totalTokens,
 	}
 	return result, nil

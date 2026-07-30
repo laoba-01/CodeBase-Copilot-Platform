@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -21,9 +21,10 @@ import {
   FolderOutlined,
   FileOutlined,
   ReloadOutlined,
+  RedoOutlined,
 } from '@ant-design/icons';
 import type { DataNode } from 'antd/es/tree';
-import { getRepo, getTask, Repository, Task } from '../api';
+import { getRepo, getRepoFiles, reindexRepo, FileEntry, Repository } from '../api';
 
 const statusColor: Record<string, string> = {
   pending: 'default',
@@ -33,6 +34,77 @@ const statusColor: Record<string, string> = {
   error: 'red',
 };
 
+function buildFileTree(files: FileEntry[]): DataNode[] {
+  const root: Record<string, DataNode> = {};
+
+  for (const file of files) {
+    const parts = file.file_path.split('/');
+    let currentPath = '';
+    let parentMap = root;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+
+      if (!parentMap[currentPath]) {
+        const node: DataNode = {
+          title: part,
+          key: currentPath,
+          isLeaf: isLast,
+          icon: isLast ? <FileOutlined /> : <FolderOutlined />,
+          children: isLast ? undefined : [],
+        };
+        parentMap[currentPath] = node;
+      }
+
+      if (!isLast) {
+        parentMap = (parentMap[currentPath].children || []) as unknown as Record<string, DataNode>;
+      }
+    }
+  }
+
+  // Convert the flat map to a nested tree array
+  const tree: DataNode[] = [];
+  for (const key of Object.keys(root)) {
+    const node = root[key];
+    // Only include top-level entries (no '/' in key, or first segment)
+    if (!key.includes('/')) {
+      tree.push(node);
+    }
+  }
+
+  // Link children by key prefix matching
+  function linkChildren(nodes: DataNode[], prefix: string) {
+    for (const node of nodes) {
+      const nodeKey = node.key as string;
+      const childPrefix = prefix ? `${prefix}/${nodeKey}` : nodeKey;
+      // Find all nodes whose key starts with childPrefix + '/'
+      const children: DataNode[] = [];
+      const remainingKeys: string[] = [];
+      for (const key of Object.keys(root)) {
+        if (key === nodeKey) continue;
+        if (key.startsWith(childPrefix + '/')) {
+          const rest = key.slice(childPrefix.length + 1);
+          if (!rest.includes('/')) {
+            children.push(root[key]);
+          }
+        }
+      }
+      if (children.length > 0) {
+        node.children = children;
+        for (const child of children) {
+          linkChildren([child], childPrefix);
+        }
+      }
+    }
+  }
+
+  linkChildren(tree, '');
+
+  return tree;
+}
+
 export default function RepoDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -40,9 +112,10 @@ export default function RepoDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<DataNode[]>([]);
-  const [indexTask, setIndexTask] = useState<Task | null>(null);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
 
-  const fetchRepo = async () => {
+  const fetchRepo = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     setError(null);
@@ -54,11 +127,31 @@ export default function RepoDetail() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  const fetchFiles = useCallback(async () => {
+    if (!id) return;
+    setFilesLoading(true);
+    try {
+      const files = await getRepoFiles(id);
+      const tree = buildFileTree(files);
+      setFileTree(tree);
+    } catch {
+      // silently ignore file fetch errors
+    } finally {
+      setFilesLoading(false);
+    }
+  }, [id]);
 
   useEffect(() => {
     fetchRepo();
-  }, [id]);
+  }, [fetchRepo]);
+
+  useEffect(() => {
+    if (repo?.status === 'ready') {
+      fetchFiles();
+    }
+  }, [repo?.status, fetchFiles]);
 
   // Poll for task status if repo is indexing
   useEffect(() => {
@@ -66,9 +159,9 @@ export default function RepoDetail() {
 
     const pollInterval = setInterval(async () => {
       try {
-        const repos = await getRepo(id!);
-        setRepo(repos);
-        if (repos.status === 'ready' || repos.status === 'error') {
+        const updated = await getRepo(id!);
+        setRepo(updated);
+        if (updated.status === 'ready' || updated.status === 'error') {
           clearInterval(pollInterval);
         }
       } catch {
@@ -78,6 +171,20 @@ export default function RepoDetail() {
 
     return () => clearInterval(pollInterval);
   }, [repo?.status, id]);
+
+  const handleReindex = async () => {
+    if (!id) return;
+    setReindexing(true);
+    try {
+      await reindexRepo(id);
+      message.success('Reindex started');
+      setRepo(prev => prev ? { ...prev, status: 'pending' } : null);
+    } catch (err: any) {
+      message.error(err.message || 'Failed to reindex');
+    } finally {
+      setReindexing(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -171,7 +278,7 @@ export default function RepoDetail() {
           </Card>
         )}
 
-        {/* File tree placeholder */}
+        {/* File tree */}
         <Card
           title={
             <Space>
@@ -180,13 +287,31 @@ export default function RepoDetail() {
             </Space>
           }
           extra={
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Indexed files available for Q&A
-            </Typography.Text>
+            <Space>
+              {repo.status === 'ready' && (
+                <>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {fileTree.length > 0 ? `${fileTree.length} top-level items` : ''}
+                  </Typography.Text>
+                  <Button
+                    icon={<RedoOutlined />}
+                    onClick={handleReindex}
+                    loading={reindexing}
+                    size="small"
+                  >
+                    Reindex
+                  </Button>
+                </>
+              )}
+            </Space>
           }
         >
           {repo.status === 'ready' ? (
-            fileTree.length > 0 ? (
+            filesLoading ? (
+              <div style={{ textAlign: 'center', padding: 20 }}>
+                <Spin tip="Loading files..." />
+              </div>
+            ) : fileTree.length > 0 ? (
               <Tree
                 showIcon
                 defaultExpandAll
@@ -197,7 +322,7 @@ export default function RepoDetail() {
               />
             ) : (
               <Empty
-                description="File tree will appear here after indexing completes."
+                description="No indexed files found. Try reindexing."
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
               />
             )

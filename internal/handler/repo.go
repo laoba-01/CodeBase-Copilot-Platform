@@ -41,7 +41,9 @@ func (h *RepoHandler) Create(c *gin.Context) {
 
 func (h *RepoHandler) List(c *gin.Context) {
 	userID := auth.GetUserID(c)
-	repos, err := h.svc.List(c.Request.Context(), userID)
+	offset := 0
+	limit := 50
+	repos, err := h.svc.List(c.Request.Context(), userID, offset, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -122,6 +124,62 @@ func (h *RepoHandler) Graph(c *gin.Context) {
 	c.JSON(http.StatusOK, graph)
 }
 
+func (h *RepoHandler) Reindex(c *gin.Context) {
+	repoID := c.Param("id")
+	userID := auth.GetUserID(c)
+
+	// Verify repo ownership and get repo
+	r, err := h.svc.Get(c.Request.Context(), repoID, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	// Trigger reindex
+	if err := h.svc.Reindex(c.Request.Context(), r); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"status": "reindexing", "repo_id": repoID})
+}
+
+type searchReq struct {
+	Query string `json:"query" binding:"required"`
+}
+
+func (h *RepoHandler) Search(c *gin.Context) {
+	repoID := c.Param("id")
+	userID := auth.GetUserID(c)
+
+	// Verify repo ownership
+	if _, err := h.svc.Get(c.Request.Context(), repoID, userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	var req searchReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "query is required"})
+		return
+	}
+
+	results, err := h.svc.SearchCode(c.Request.Context(), repoID, req.Query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, results)
+}
+
 func (h *RepoHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.POST("/repos", h.Create)
 	r.GET("/repos", h.List)
@@ -129,4 +187,6 @@ func (h *RepoHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.DELETE("/repos/:id", h.Delete)
 	r.GET("/repos/:id/files", h.Files)
 	r.GET("/repos/:id/graph", h.Graph)
+	r.POST("/repos/:id/reindex", h.Reindex)
+	r.POST("/repos/:id/search", h.Search)
 }

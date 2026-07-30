@@ -1,5 +1,6 @@
 .env
 *.exe
 node_modules/
-server
+/server
+bin/
 data/

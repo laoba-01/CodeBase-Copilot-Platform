@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/codebase-copilot/core/internal/domain"
 	"github.com/codebase-copilot/core/internal/task"
 )
 
@@ -25,6 +26,20 @@ func (h *TaskHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+func (h *TaskHandler) List(c *gin.Context) {
+	repoID := c.Query("repo_id")
+	tasks, err := h.svc.List(c.Request.Context(), repoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if tasks == nil {
+		tasks = []domain.Task{}
+	}
+	c.JSON(http.StatusOK, tasks)
+}
+
 func (h *TaskHandler) RegisterRoutes(r *gin.RouterGroup) {
+	r.GET("/tasks", h.List)
 	r.GET("/tasks/:id", h.Get)
 }

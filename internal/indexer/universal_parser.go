@@ -121,9 +121,9 @@ func detectLanguage(repoPath string) string {
 		}
 		// Skip hidden dirs, vendor, testdata
 		name := info.Name()
-		dir := filepath.Dir(path)
+		dir := filepath.ToSlash(filepath.Dir(path))
 		for _, skip := range []string{"/.git/", "/vendor/", "/testdata/", "/node_modules/", "/__pycache__/"} {
-			if strings.Contains(dir, skip) || strings.HasPrefix(name, ".") {
+			if strings.HasPrefix(name, ".") || strings.Contains(dir, skip) {
 				return nil
 			}
 		}

@@ -61,6 +61,12 @@ func main() {
 	var indexSvc *indexer.Service
 	if embClient != nil {
 		indexSvc = indexer.NewService(pool, embClient, vstore, "/data/repos")
+		// Wire task hooks so indexing progress is persisted
+		indexSvc.SetTaskHooks(indexer.TaskHooks{
+			Create: taskSvc.Enqueue,
+			Done:   taskSvc.Complete,
+			Fail:   taskSvc.Fail,
+		})
 		repoSvc.Indexer = indexSvc.IndexRepo
 	}
 
@@ -106,6 +112,14 @@ func main() {
 	if askHandler != nil {
 		askHandler.RegisterRoutes(api)
 	}
+
+	// Health check
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"version": "0.1.0",
+		})
+	})
 
 	// Static file serving for React frontend
 	if _, err := os.Stat("web/dist"); err == nil {

@@ -70,11 +70,35 @@ func (s *Service) Create(ctx context.Context, userID, fullName string) (*domain.
 	return repo, nil
 }
 
-func (s *Service) List(ctx context.Context, userID string) ([]domain.Repository, error) {
+// Reindex triggers a re-index of an existing repository.
+func (s *Service) Reindex(ctx context.Context, repo *domain.Repository) error {
+	// Reset status to pending (indexer will update to indexing → ready/error)
+	_, err := s.db.Exec(ctx,
+		`UPDATE repos SET status = 'pending' WHERE id = $1`, repo.ID)
+	if err != nil {
+		return fmt.Errorf("reset repo status: %w", err)
+	}
+
+	// Kick off background indexing
+	if s.Indexer != nil {
+		repo.Status = domain.RepoStatusPending
+		go func() {
+			if err := s.Indexer(context.Background(), repo); err != nil {
+				log.Printf("reindex error for repo %s: %v", repo.ID, err)
+				s.db.Exec(context.Background(),
+					`UPDATE repos SET status = 'error' WHERE id = $1`, repo.ID)
+			}
+		}()
+	}
+
+	return nil
+}
+
+func (s *Service) List(ctx context.Context, userID string, offset, limit int) ([]domain.Repository, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, user_id, name, full_name, clone_url, default_branch, status, indexed_at, created_at
-		FROM repos WHERE user_id = $1 ORDER BY created_at DESC
-	`, userID)
+		FROM repos WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+	`, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list repos: %w", err)
 	}
@@ -147,6 +171,52 @@ func (s *Service) GetFiles(ctx context.Context, repoID string) ([]FileNode, erro
 type GraphData struct {
 	CallEdges []domain.CallEdge `json:"call_edges"`
 	DepEdges  []domain.DepEdge  `json:"dep_edges"`
+}
+
+// SearchResult is a lightweight code search hit.
+type SearchResult struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	FilePath  string `json:"file_path"`
+	StartLine int    `json:"start_line"`
+	Code      string `json:"code"`
+	Signature string `json:"signature"`
+	Language  string `json:"language"`
+}
+
+// SearchCode performs a full-text search over indexed nodes by name, signature, and code.
+func (s *Service) SearchCode(ctx context.Context, repoID, query string) ([]SearchResult, error) {
+	searchPattern := "%" + query + "%"
+	rows, err := s.db.Query(ctx, `
+		SELECT id, name, type, file_path, start_line, code, signature, language
+		FROM index_nodes
+		WHERE repo_id = $1 AND (name ILIKE $2 OR signature ILIKE $2 OR code ILIKE $2)
+		ORDER BY name, file_path
+		LIMIT 50
+	`, repoID, searchPattern)
+	if err != nil {
+		return nil, fmt.Errorf("search code: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var r SearchResult
+		var code, sig string
+		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.FilePath,
+			&r.StartLine, &code, &sig, &r.Language); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		// Truncate code preview
+		if len(code) > 500 {
+			code = code[:500] + "..."
+		}
+		r.Code = code
+		r.Signature = sig
+		results = append(results, r)
+	}
+	return results, nil
 }
 
 // GetGraph returns the call edges and dependency edges for a repo.

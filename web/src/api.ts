@@ -94,6 +94,18 @@ export async function deleteRepo(id: string): Promise<void> {
   await api(`/repos/${id}`, { method: 'DELETE' });
 }
 
+export interface FileEntry {
+  file_path: string;
+}
+
+export async function getRepoFiles(id: string): Promise<FileEntry[]> {
+  return api(`/repos/${id}/files`);
+}
+
+export async function reindexRepo(id: string): Promise<{ status: string }> {
+  return api(`/repos/${id}/reindex`, { method: 'POST' });
+}
+
 // Task API
 export async function getTask(id: string): Promise<Task> {
   return api(`/tasks/${id}`);

@@ -271,7 +271,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	defer pool.Close()
 
 	r := setupTestRouter(pool, cfg)
-	token := generateTestToken(t, cfg, "test-user-42")
+	token := generateTestToken(t, cfg, "00000000-0000-0000-0000-000000000042")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/repos", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -279,7 +279,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("valid token: expected 200, got %d", w.Code)
+		t.Errorf("valid token: expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
 }
 
