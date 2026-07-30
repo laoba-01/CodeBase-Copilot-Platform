@@ -35,72 +35,65 @@ const statusColor: Record<string, string> = {
 };
 
 function buildFileTree(files: FileEntry[]): DataNode[] {
-  const root: Record<string, DataNode> = {};
+  const tree: DataNode[] = [];
+
+  // Find or create a node at a given level of the tree
+  function findOrCreateDir(nodes: DataNode[], name: string, fullPath: string): DataNode {
+    let node = nodes.find(n => n.key === fullPath);
+    if (!node) {
+      node = {
+        title: name,
+        key: fullPath,
+        isLeaf: false,
+        icon: <FolderOutlined />,
+        children: [],
+      };
+      nodes.push(node);
+    }
+    return node;
+  }
 
   for (const file of files) {
     const parts = file.file_path.split('/');
+    let currentNodes = tree;
     let currentPath = '';
-    let parentMap = root;
 
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
-      const isLast = i === parts.length - 1;
       currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const isLast = i === parts.length - 1;
 
-      if (!parentMap[currentPath]) {
-        const node: DataNode = {
+      if (isLast) {
+        // File node
+        currentNodes.push({
           title: part,
           key: currentPath,
-          isLeaf: isLast,
-          icon: isLast ? <FileOutlined /> : <FolderOutlined />,
-          children: isLast ? undefined : [],
-        };
-        parentMap[currentPath] = node;
-      }
-
-      if (!isLast) {
-        parentMap = (parentMap[currentPath].children || []) as unknown as Record<string, DataNode>;
+          isLeaf: true,
+          icon: <FileOutlined />,
+        });
+      } else {
+        // Directory node
+        const dir = findOrCreateDir(currentNodes, part, currentPath);
+        currentNodes = dir.children as DataNode[];
       }
     }
   }
 
-  // Convert the flat map to a nested tree array
-  const tree: DataNode[] = [];
-  for (const key of Object.keys(root)) {
-    const node = root[key];
-    // Only include top-level entries (no '/' in key, or first segment)
-    if (!key.includes('/')) {
-      tree.push(node);
-    }
-  }
-
-  // Link children by key prefix matching
-  function linkChildren(nodes: DataNode[], prefix: string) {
+  // Sort each level: directories first, then alphabetically
+  function sortTree(nodes: DataNode[]) {
+    nodes.sort((a, b) => {
+      const aLeaf = a.isLeaf ? 1 : 0;
+      const bLeaf = b.isLeaf ? 1 : 0;
+      if (aLeaf !== bLeaf) return aLeaf - bLeaf;
+      return (a.title as string).localeCompare(b.title as string);
+    });
     for (const node of nodes) {
-      const nodeKey = node.key as string;
-      const childPrefix = prefix ? `${prefix}/${nodeKey}` : nodeKey;
-      // Find all nodes whose key starts with childPrefix + '/'
-      const children: DataNode[] = [];
-      const remainingKeys: string[] = [];
-      for (const key of Object.keys(root)) {
-        if (key === nodeKey) continue;
-        if (key.startsWith(childPrefix + '/')) {
-          const rest = key.slice(childPrefix.length + 1);
-          if (!rest.includes('/')) {
-            children.push(root[key]);
-          }
-        }
-      }
-      if (children.length > 0) {
-        node.children = children;
-        for (const child of children) {
-          linkChildren([child], childPrefix);
-        }
+      if (node.children && node.children.length > 0) {
+        sortTree(node.children as DataNode[]);
       }
     }
   }
-
-  linkChildren(tree, '');
+  sortTree(tree);
 
   return tree;
 }
