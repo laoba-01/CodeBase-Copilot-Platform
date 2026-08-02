@@ -18,6 +18,7 @@ type Config struct {
 	LLMModel           string
 	AllowedOrigin      string
 	DevMode            bool
+	GitSSLVerify       bool
 }
 
 func Load() *Config {
@@ -37,6 +38,7 @@ func Load() *Config {
 		LLMModel:           env("LLM_MODEL", "claude-sonnet-5"),
 		AllowedOrigin:      env("CORS_ORIGIN", "http://localhost:8080"),
 		DevMode:            env("DEV_MODE", "true") == "true",
+		GitSSLVerify:       env("GIT_SSL_VERIFY", "true") == "true",
 	}
 	// Validate required secrets at startup
 	if cfg.JWTSecret == "" || cfg.JWTSecret == "change-me-in-production" || cfg.JWTSecret == "dev-secret" {

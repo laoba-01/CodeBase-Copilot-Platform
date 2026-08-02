@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/codebase-copilot/core/internal/redis"
 )
+
+// ── Body Limit ──
 
 // BodyLimit returns middleware that limits request body size.
 func BodyLimit(maxBytes int64) gin.HandlerFunc {
@@ -16,13 +21,76 @@ func BodyLimit(maxBytes int64) gin.HandlerFunc {
 	}
 }
 
-// RateLimiter is a simple per-IP token-bucket rate limiter.
-type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     int           // tokens per second
-	burst    int           // max burst
-	cleanup  time.Duration // cleanup interval
+// ── Rate Limiting ──
+
+// redisLimiter is the optional Redis-backed rate limiter for distributed deployments.
+// When set, rate limits are shared across all replicas. When nil (default), the
+// in-memory token-bucket fallback is used.
+var redisLimiter *redis.RateLimiter
+
+// SetRedisRateLimiter configures the Redis-backed rate limiter.
+// Call once at startup before serving requests.
+func SetRedisRateLimiter(rl *redis.RateLimiter) {
+	redisLimiter = rl
+}
+
+// RateLimit returns middleware that rate-limits requests.
+// Uses Redis sliding-window when available, otherwise falls back to in-memory token-bucket.
+func RateLimit(rate, burst int) gin.HandlerFunc {
+	if redisLimiter != nil {
+		return redisRateLimit(rate, burst)
+	}
+	return memoryRateLimit(rate, burst)
+}
+
+// StrictRateLimit returns a rate limiter with lower burst for expensive endpoints.
+func StrictRateLimit(rate, burst int) gin.HandlerFunc {
+	if redisLimiter != nil {
+		return redisRateLimit(rate, burst)
+	}
+	return memoryRateLimit(rate, burst)
+}
+
+// ── Redis-backed sliding-window rate limiter ──
+
+func redisRateLimit(rate, burst int) gin.HandlerFunc {
+	// rate = max requests, burst = not used in sliding-window (stays compatible)
+	// Window is 1 second — so rate = max requests per second
+	window := 1 * time.Second
+	// Use burst as the max requests in the window
+	maxRequests := burst
+
+	return func(c *gin.Context) {
+		allowed, err := redisLimiter.Allow(
+			c.Request.Context(),
+			"api",
+			c.ClientIP(),
+			maxRequests,
+			window,
+		)
+		if err != nil {
+			// Log and allow on Redis errors (fail-open)
+			log.Printf("WARNING: redis rate limit error: %v", err)
+			c.Next()
+			return
+		}
+		if !allowed {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// ── In-memory token-bucket rate limiter (fallback / single-instance) ──
+
+// memoryRateLimiter is a simple per-IP token-bucket rate limiter.
+type memoryRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*bucket
+	rate    int           // tokens per second
+	burst   int           // max burst
+	cleanup time.Duration // cleanup interval
 }
 
 type bucket struct {
@@ -30,9 +98,8 @@ type bucket struct {
 	lastTime time.Time
 }
 
-// NewRateLimiter creates a rate limiter with the given rate and burst.
-func NewRateLimiter(rate, burst int) *RateLimiter {
-	rl := &RateLimiter{
+func newMemoryRateLimiter(rate, burst int) *memoryRateLimiter {
+	rl := &memoryRateLimiter{
 		buckets: make(map[string]*bucket),
 		rate:    rate,
 		burst:   burst,
@@ -42,7 +109,7 @@ func NewRateLimiter(rate, burst int) *RateLimiter {
 	return rl
 }
 
-func (rl *RateLimiter) cleanupLoop() {
+func (rl *memoryRateLimiter) cleanupLoop() {
 	for {
 		time.Sleep(rl.cleanup)
 		rl.mu.Lock()
@@ -56,8 +123,8 @@ func (rl *RateLimiter) cleanupLoop() {
 	}
 }
 
-// Allow checks if a request from the given key is allowed.
-func (rl *RateLimiter) Allow(key string) bool {
+// allow checks if a request from the given key is allowed.
+func (rl *memoryRateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -83,20 +150,15 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return false
 }
 
-// RateLimit returns middleware that rate-limits requests.
-func RateLimit(rate, burst int) gin.HandlerFunc {
-	rl := NewRateLimiter(rate, burst)
+// memoryRateLimit returns middleware that uses in-memory token-bucket rate limiting.
+func memoryRateLimit(rate, burst int) gin.HandlerFunc {
+	rl := newMemoryRateLimiter(rate, burst)
 	return func(c *gin.Context) {
 		key := c.ClientIP()
-		if !rl.Allow(key) {
+		if !rl.allow(key) {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
 			return
 		}
 		c.Next()
 	}
-}
-
-// StrictRateLimit returns a rate limiter with lower burst for expensive endpoints.
-func StrictRateLimit(rate, burst int) gin.HandlerFunc {
-	return RateLimit(rate, burst)
 }

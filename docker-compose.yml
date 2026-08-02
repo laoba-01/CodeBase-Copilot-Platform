@@ -1,4 +1,19 @@
 services:
+  # ── Cloudflare Tunnel (handles TLS, DDoS, WAF at the edge) ──
+  # Setup: https://one.dash.cloudflare.com → Networks → Tunnels → Create
+  # Copy the tunnel token to .env as CLOUDFLARE_TUNNEL_TOKEN
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+
   app:
     build: .
     dns:
@@ -12,7 +27,7 @@ services:
       REDIS_URL: redis://:copilot-redis@redis:6379
       EMBEDDING_ADDR: embedding:50051
       DEV_MODE: "false"
-      CORS_ORIGIN: "http://localhost:8080"
+      CORS_ORIGIN: "${CORS_ORIGIN:-https://your-domain.com}"
     depends_on:
       db:
         condition: service_healthy
@@ -22,6 +37,11 @@ services:
       - ./data/repos:/data/repos
       - ./web/dist:/app/web/dist
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
 
   db:
     image: pgvector/pgvector:pg16
@@ -39,13 +59,23 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
 
   redis:
     image: redis:7-alpine
-    command: redis-server --requirepass copilot-redis
+    command: redis-server --requirepass copilot-redis --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "127.0.0.1:6379:6379"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
 
   embedding:
     build:
@@ -58,6 +88,11 @@ services:
     volumes:
       - modelscope_data:/modelscope-cache
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
 
 volumes:
   pgdata:

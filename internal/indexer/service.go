@@ -157,10 +157,14 @@ func (s *Service) recordTaskFail(ctx context.Context, taskID, errMsg string) {
 // ensureCloned clones the repo if it doesn't exist locally, or pulls latest.
 // It respects HTTP_PROXY/HTTPS_PROXY environment variables for environments
 // that need a proxy to reach GitHub (e.g. Docker behind a host proxy).
-// SSL verification is disabled for environments with custom CA certificates.
+// SSL verification can be disabled via GIT_SSL_VERIFY=false for air-gapped
+// environments with self-signed certificates.
 func (s *Service) ensureCloned(ctx context.Context, repo *domain.Repository, path string) error {
-	gitArgs := []string{
-		"-c", "http.sslVerify=false",
+	var gitArgs []string
+
+	// Only disable SSL verification when explicitly configured
+	if os.Getenv("GIT_SSL_VERIFY") == "false" {
+		gitArgs = append(gitArgs, "-c", "http.sslVerify=false")
 	}
 
 	// Only set proxy override if explicit env var is present;

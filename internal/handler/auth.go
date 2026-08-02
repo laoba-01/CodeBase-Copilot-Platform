@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -160,7 +161,9 @@ type githubUser struct {
 }
 
 // shared HTTP client with timeouts
-var httpClient = &http.Client{}
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
 
 func exchangeGitHubToken(clientID, clientSecret, code string) (string, error) {
 	resp, err := httpClient.PostForm("https://github.com/login/oauth/access_token", url.Values{

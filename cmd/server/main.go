@@ -18,6 +18,7 @@ import (
 	"github.com/codebase-copilot/core/internal/handler"
 	"github.com/codebase-copilot/core/internal/indexer"
 	"github.com/codebase-copilot/core/internal/qa"
+	"github.com/codebase-copilot/core/internal/redis"
 	"github.com/codebase-copilot/core/internal/repo"
 	"github.com/codebase-copilot/core/internal/task"
 	"github.com/codebase-copilot/core/internal/vectorstore"
@@ -26,16 +27,19 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// Database
+	// Initialize structured JSON logging (text format in dev mode)
+	handler.InitLogger(cfg.DevMode)
+
+	// Database (with exponential backoff retry)
 	pool, err := db.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
 	defer pool.Close()
 
-	// Run migrations
+	// Run migrations (fatal on failure — production must not run with a broken schema)
 	if err := db.RunMigrations(context.Background(), pool, "/migrations"); err != nil {
-		log.Printf("WARNING: migrations: %v", err)
+		log.Fatalf("FATAL: migrations failed: %v", err)
 	}
 
 	// Recover repos stuck in transient states from a previous crash
@@ -50,6 +54,19 @@ func main() {
 		// Don't fatal — allow starting without embedding for development
 	} else {
 		defer embClient.Close()
+	}
+
+	// Redis client (optional — app falls back to in-memory rate limiting)
+	var redisClient *redis.Client
+	if cfg.RedisURL != "" {
+		redisClient, err = redis.NewClient(context.Background(), cfg.RedisURL)
+		if err != nil {
+			log.Printf("WARNING: Redis not available, using in-memory rate limiting: %v", err)
+		} else {
+			defer redisClient.Close()
+			// Enable distributed rate limiting shared across all replicas
+			handler.SetRedisRateLimiter(redis.NewRateLimiter(redisClient.Conn()))
+		}
 	}
 
 	// Services
@@ -92,8 +109,13 @@ func main() {
 	// Gin router
 	r := gin.Default()
 
-	// Global middleware: body size limit (1MB) and rate limiting
-	r.Use(handler.BodyLimit(1 << 20)) // 1 MB max request body
+	// Global middleware: request ID, metrics, structured logging
+	r.Use(handler.RequestID())
+	r.Use(handler.MetricsMiddleware())
+	r.Use(handler.StructuredLogging())
+
+	// Body size limit (1MB)
+	r.Use(handler.BodyLimit(1 << 20))
 
 	// CORS with configurable origin (never wildcard in production)
 	r.Use(func(c *gin.Context) {
@@ -138,6 +160,9 @@ func main() {
 	// Rate limit auth endpoints
 	r.Use(handler.RateLimit(20, 40)) // 20 req/s burst 40 for auth routes
 
+	// Prometheus metrics endpoint
+	r.GET("/metrics", handler.MetricsHandler())
+
 	// Health check with dependency verification
 	r.GET("/health", func(c *gin.Context) {
 		healthy := true
@@ -156,6 +181,17 @@ func main() {
 			checks["embedding"] = "ok"
 		} else {
 			checks["embedding"] = "unavailable"
+		}
+
+		// Check Redis
+		if redisClient != nil {
+			if err := redisClient.Ping(c.Request.Context()); err != nil {
+				checks["redis"] = "unhealthy"
+			} else {
+				checks["redis"] = "ok"
+			}
+		} else {
+			checks["redis"] = "unavailable"
 		}
 
 		status := "ok"
